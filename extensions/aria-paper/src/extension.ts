@@ -215,6 +215,21 @@ export function activate(context: vscode.ExtensionContext): void {
 	context.subscriptions.push(vscode.commands.registerCommand('aria.paper.addFigures', (id: string) => uploadAssets(id, 'figure')));
 	context.subscriptions.push(vscode.commands.registerCommand('aria.paper.addFiguresFromSaved', (id: string) => addFiguresFromSaved(id)));
 	context.subscriptions.push(vscode.commands.registerCommand('aria.paper.addSources', (id: string) => uploadAssets(id, 'source')));
+	// List the generated figures (.qoka/figures) so the writer can show an inline
+	// checkbox picker; add the chosen ones by path.
+	context.subscriptions.push(vscode.commands.registerCommand('aria.paper.listGeneratedFigures', () => {
+		const genDir = generatedFiguresDir();
+		if (!genDir || !fs.existsSync(genDir)) { return [] as { name: string; path: string }[]; }
+		try {
+			return fs.readdirSync(genDir).filter(n => /\.(png|jpe?g|gif|svg|webp|bmp|tiff)$/i.test(n)).sort()
+				.map(n => ({ name: n, path: path.join(genDir, n) }));
+		} catch { return [] as { name: string; path: string }[]; }
+	}));
+	context.subscriptions.push(vscode.commands.registerCommand('aria.paper.addFiguresByPath', (id: string, paths: string[]) => {
+		const added: PaperAsset[] = [];
+		for (const p of (paths ?? [])) { try { added.push(addAsset(id, 'figure', p)); } catch { /* skip bad path */ } }
+		return added;
+	}));
 	context.subscriptions.push(vscode.commands.registerCommand('aria.paper.removeAsset', (id: string, assetId: string) => {
 		removeAsset(id, assetId);
 	}));

@@ -82,6 +82,9 @@ export class AriaPaperWriterEditorPane extends EditorPane {
 	private library: LibraryEntry[] = [];
 	private activeTag = '';
 	private libraryPickerOpen = false;
+	// Inline "Add from Figures" picker (generated figures in .qoka/figures).
+	private figurePickerOpen = false;
+	private generatedFigures: { name: string; path: string }[] = [];
 	private focusEditing = false;
 	private lastSelfWriteAt = 0;
 	private proposalPending = false;
@@ -477,13 +480,17 @@ export class AriaPaperWriterEditorPane extends EditorPane {
 		const tools = append(root, $('div'));
 		Object.assign(tools.style, { display: 'flex', alignItems: 'center', gap: '8px', margin: '8px 0 0' });
 		if (kind === 'figure') {
-			// Two ways to add a figure: from disk, or from the generated store
-			// (.qoka/figures) that the Manuscript tab's Figures section shows.
+			// Two ways to add a figure: upload from disk, or pick from the generated
+			// store (.qoka/figures) that the Manuscript tab's Figures section shows -
+			// the latter opens an inline checkbox box below (like Paper Library).
 			tools.appendChild(this.button(localize('aria.paperWriter.uploadFigure', "Upload figure"), 'ghost', () => void this.addAssets('aria.paper.addFigures')));
-			tools.appendChild(this.button(localize('aria.paperWriter.addFromFigures', "Add from Figures"), 'ghost', () => void this.addAssets('aria.paper.addFiguresFromSaved')));
+			tools.appendChild(this.button(
+				this.figurePickerOpen ? localize('aria.paperWriter.hideFigures', "Close Figures") : localize('aria.paperWriter.addFromFigures', "Add from Figures"),
+				'ghost', () => void this.toggleFigurePicker()));
 		} else {
 			tools.appendChild(this.button(localize('aria.paperWriter.addSources', "Add files"), 'ghost', () => void this.addAssets('aria.paper.addSources')));
 		}
+		if (kind === 'figure' && this.figurePickerOpen) { this.renderFigurePicker(root); }
 		const pending = items.filter(i => !i.summary).length;
 		if (pending > 0) {
 			// No prompt-copy: show an example to send to the AI chat (like the Focus
@@ -599,12 +606,58 @@ export class AriaPaperWriterEditorPane extends EditorPane {
 			Object.assign(txt.style, { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' });
 		}
 
-		const add = append(panel, this.button(localize('aria.paperWriter.addSelected', "+ Add selected as citations"), 'primary', () => {
+		const addRow = append(panel, $('div'));
+		Object.assign(addRow.style, { display: 'flex', justifyContent: 'flex-end', marginTop: '8px' });
+		append(addRow, this.button(localize('aria.paperWriter.addSelected', "+ Add selected as citations"), 'primary', () => {
 			if (selected.size === 0) { return; }
 			for (const p of selected) { this.citations.push(this.toCsl(p)); }
 			void this.saveCitations().then(() => this.render());
-		})) as HTMLElement;
-		add.style.marginTop = '8px';
+		}));
+	}
+
+	private async toggleFigurePicker(): Promise<void> {
+		if (!this.meta) { return; }
+		if (!this.figurePickerOpen) {
+			this.generatedFigures = (await this.commandService.executeCommand<{ name: string; path: string }[]>('aria.paper.listGeneratedFigures', this.meta.id)) ?? [];
+		}
+		this.figurePickerOpen = !this.figurePickerOpen;
+		this.render();
+	}
+
+	/** Inline picker for generated figures (.qoka/figures): checkbox multi-select
+	 *  + a right-aligned "Add selected figures". Mirrors the Paper Library box. */
+	private renderFigurePicker(root: HTMLElement): void {
+		const panel = append(root, $('div'));
+		Object.assign(panel.style, { border: '1px solid rgba(127,127,127,0.35)', borderRadius: '6px', padding: '10px 12px', marginTop: '6px' });
+		if (this.generatedFigures.length === 0) {
+			const e = append(panel, $('div'));
+			e.textContent = localize('aria.paperWriter.noGenFigures', "No figures yet. Ask the chat to create one; it appears in the Manuscript tab's Figures section.");
+			Object.assign(e.style, { fontSize: '13px', opacity: '0.6' });
+			return;
+		}
+		const selected = new Set<string>();
+		const list = append(panel, $('div'));
+		applyAriaScrollbar(list);
+		Object.assign(list.style, { maxHeight: '220px', overflowY: 'auto' });
+		for (const f of this.generatedFigures) {
+			const row = append(list, $('label'));
+			Object.assign(row.style, { display: 'flex', alignItems: 'center', gap: '8px', padding: '3px 0', fontSize: '13px', cursor: 'pointer' });
+			const cb = append(row, $('input')) as HTMLInputElement;
+			cb.type = 'checkbox'; cb.style.flexShrink = '0';
+			cb.onchange = () => { if (cb.checked) { selected.add(f.path); } else { selected.delete(f.path); } };
+			const txt = append(row, $('span')); txt.textContent = f.name;
+			Object.assign(txt.style, { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' });
+		}
+		const addRow = append(panel, $('div'));
+		Object.assign(addRow.style, { display: 'flex', justifyContent: 'flex-end', marginTop: '8px' });
+		append(addRow, this.button(localize('aria.paperWriter.addSelectedFigures', "+ Add selected figures"), 'primary', () => {
+			if (selected.size === 0 || !this.meta) { return; }
+			void this.commandService.executeCommand('aria.paper.addFiguresByPath', this.meta.id, Array.from(selected)).then(async () => {
+				this.figurePickerOpen = false;
+				await this.reload();
+				this.render();
+			});
+		}));
 	}
 
 	private async importBibtex(): Promise<void> {
