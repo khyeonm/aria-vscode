@@ -847,21 +847,25 @@ export class AriaPeerReviewEditorPane extends EditorPane {
 		const text = this.paperText;
 		if (!text) { body.textContent = localize('aria.peerReview.noBody', "(The paper body appears once a reviewer loads it.)"); return; }
 		this.lastRenderedMd?.dispose();
-		const rendered = renderMarkdown({ value: this.prepareMarkdown(text), isTrusted: true, supportHtml: true });
+		const dir = this.paperAssetDir();
+		// baseUri = a file in the paper draft dir, so relative image paths
+		// (figures/fig1.png) resolve to a `file:` URI - which the markdown sanitizer
+		// KEEPS (a vscode-file src would be stripped). We convert those to loadable
+		// browser URIs on the LIVE element below.
+		const baseUri = dir ? joinPath(dir, 'manuscript.md') : undefined;
+		const rendered = renderMarkdown({ value: this.prepareMarkdown(text), isTrusted: true, supportHtml: true, baseUri }, { sanitizerConfig: { remoteImageIsAllowed: () => true } });
 		this.lastRenderedMd = rendered;
 		Object.assign(rendered.element.style, { wordBreak: 'break-word' });
-		// Resolve relative figure images (e.g. figures/fig1.png) to loadable URIs on
-		// the LIVE element - this bypasses the markdown sanitizer, which would drop a
-		// vscode-file img src. Paths are relative to the paper's draft dir.
-		const dir = this.paperAssetDir();
-		if (dir) {
-			for (const img of Array.from(rendered.element.querySelectorAll('img'))) {
-				const src = img.getAttribute('src') ?? '';
-				if (src && !/^[a-z][a-z0-9+.-]*:/i.test(src) && !src.startsWith('//')) {
-					try { img.src = FileAccess.uriToBrowserUri(joinPath(dir, src.replace(/^\.?\//, ''))).toString(); } catch { /* leave as-is */ }
+		for (const img of Array.from(rendered.element.querySelectorAll('img'))) {
+			const src = img.getAttribute('src') ?? '';
+			try {
+				if (src.startsWith('file:')) {
+					img.src = FileAccess.uriToBrowserUri(URI.parse(src)).toString();
+				} else if (dir && src && !/^[a-z][a-z0-9+.-]*:/i.test(src) && !src.startsWith('//')) {
+					img.src = FileAccess.uriToBrowserUri(joinPath(dir, src.replace(/^\.?\//, ''))).toString();
 				}
-				Object.assign(img.style, { maxWidth: '100%', height: 'auto' });
-			}
+			} catch { /* leave as-is */ }
+			Object.assign(img.style, { maxWidth: '100%', height: 'auto' });
 		}
 		body.appendChild(rendered.element);
 	}
