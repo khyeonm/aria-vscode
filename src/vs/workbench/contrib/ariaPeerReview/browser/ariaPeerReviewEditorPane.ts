@@ -254,6 +254,7 @@ export class AriaPeerReviewEditorPane extends EditorPane {
 
 	private folderUri(): URI | undefined { return this.workspaceContextService.getWorkspace().folders[0]?.uri; }
 	private reviewDir(): URI | undefined { const f = this.folderUri(); return f && this.execId ? joinPath(f, '.qoka', 'manuscript', 'review', this.execId) : undefined; }
+	private reviewDocsDir(): URI | undefined { const d = this.reviewDir(); return d ? joinPath(d, 'docs') : undefined; }
 	private async readJson<T>(uri: URI): Promise<T | undefined> { try { return JSON.parse((await this.fileService.readFile(uri)).value.toString()) as T; } catch { return undefined; } }
 	private async readText(uri: URI): Promise<string> { try { return (await this.fileService.readFile(uri)).value.toString(); } catch { return ''; } }
 
@@ -847,11 +848,18 @@ export class AriaPeerReviewEditorPane extends EditorPane {
 		return (f && this.meta?.paperId) ? joinPath(f, '.qoka', 'manuscript', 'draft', this.meta.paperId) : undefined;
 	}
 
-	/** Turn pandoc `^sup^` into `<sup>` so the rendered view shows superscripts.
-	 *  Image src resolution happens AFTER render (renderRenderedBody), because the
-	 *  markdown sanitizer strips a vscode-file image URI. */
+	/** Normalize pandoc-flavoured markdown for the rendered view: `^sup^` -> <sup>,
+	 *  and drop the attribute block pandoc appends to images/headers
+	 *  (`![](x.png){width="6.2in" height="6.0in"}`), which the base renderer would
+	 *  otherwise show as literal `{width=... height=...}` text. */
 	private prepareMarkdown(text: string): string {
-		return text.replace(/\^([^\s^]{1,32})\^/g, '<sup>$1</sup>');
+		return text
+			// Attributes on an image: keep the image, drop the {...} block.
+			.replace(/(!\[[^\]]*\]\([^)]*\))\s*\{[^}]*\}/g, '$1')
+			// Attributes on a header/span left on their own (e.g. after our figure
+			// marker split them off): drop a standalone {key=val ...} block.
+			.replace(/(^|\n)\s*\{[^}\n]*\b(?:width|height|#[\w-]+|\.[\w-]+)[^}\n]*\}\s*(?=\n|$)/g, '$1')
+			.replace(/\^([^\s^]{1,32})\^/g, '<sup>$1</sup>');
 	}
 
 	/** Rendered (read-only) markdown view of the manuscript body. */
@@ -905,15 +913,21 @@ export class AriaPeerReviewEditorPane extends EditorPane {
 	private async readImageData(src: string, dir: URI | undefined): Promise<string | null> {
 		if (/^(https?|data):/i.test(src)) { return null; }
 		const candidates: URI[] = [];
+		const rel = src.replace(/^\.?\//, '');
+		const docsDir = this.reviewDocsDir(); // where an uploaded doc's extracted media (media/xxx.png) lives
 		try {
 			if (src.startsWith('file:')) { candidates.push(URI.parse(src)); }
 			else if (src.startsWith('/')) { candidates.push(URI.file(src)); }
-			else if (dir && !/^[a-z][a-z0-9+.-]*:/i.test(src) && !src.startsWith('//')) { candidates.push(joinPath(dir, src.replace(/^\.?\//, ''))); }
+			else if (!/^[a-z][a-z0-9+.-]*:/i.test(src) && !src.startsWith('//')) {
+				if (dir) { candidates.push(joinPath(dir, rel)); }
+				if (docsDir) { candidates.push(joinPath(docsDir, rel)); } // docs/media/image1.png
+			}
 		} catch { /* fall through */ }
 		const base = src.split(/[?#]/)[0].split(/[\\/]/).pop() ?? '';
 		const folder = this.folderUri();
 		if (base) {
 			if (dir) { candidates.push(joinPath(dir, 'figures', base), joinPath(dir, base)); }
+			if (docsDir) { candidates.push(joinPath(docsDir, 'media', base), joinPath(docsDir, base)); }
 			if (folder) { candidates.push(joinPath(folder, '.qoka', 'figures', base)); }
 		}
 		for (const uri of candidates) {

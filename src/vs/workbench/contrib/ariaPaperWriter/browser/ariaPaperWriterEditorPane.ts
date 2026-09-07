@@ -996,7 +996,10 @@ export class AriaPaperWriterEditorPane extends EditorPane {
 		const text = this.manuscript.trim();
 		if (!text) { box.textContent = localize('aria.paperWriter.noBody', "(No draft yet.)"); return; }
 		box.textContent = localize('aria.paperWriter.rendering', "Rendering...");
-		void this.renderDraftInlined(box, text.replace(/\^([^\s^]{1,32})\^/g, '<sup>$1</sup>'), this.folder);
+		const md = text
+			.replace(/(!\[[^\]]*\]\([^)]*\))\s*\{[^}]*\}/g, '$1')
+			.replace(/\^([^\s^]{1,32})\^/g, '<sup>$1</sup>');
+		void this.renderDraftInlined(box, md, this.folder);
 	}
 
 	private async renderDraftInlined(box: HTMLElement, md: string, dir: URI | undefined): Promise<void> {

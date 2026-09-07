@@ -80,8 +80,11 @@ export function getReviewMeta(execId: string): ReviewMeta | undefined {
 	}
 }
 
-/** Extract plain text / markdown from an attached document (any common format). */
-async function extractText(absFile: string): Promise<string> {
+/** Extract plain text / markdown from an attached document (any common format).
+ *  `mediaDir`: when given (the review's docs/ dir), embedded images are extracted
+ *  there via pandoc `--extract-media`, so the markdown's `media/xxx.png` references
+ *  resolve to real files. Without it, those references point at nothing. */
+async function extractText(absFile: string, mediaDir?: string): Promise<string> {
 	const ext = path.extname(absFile).toLowerCase();
 	if (ext === '.md' || ext === '.markdown' || ext === '.txt') {
 		return fs.readFileSync(absFile, 'utf8');
@@ -94,7 +97,17 @@ async function extractText(absFile: string): Promise<string> {
 						: 'docx';
 		try {
 			const pandoc = await getPandoc();
-			const { stdout } = await execFileAsync(pandoc, [absFile, '-f', from, '-t', 'markdown', '--wrap=none'], { timeout: 60000, maxBuffer: 32 * 1024 * 1024 });
+			const args = [absFile, '-f', from, '-t', 'markdown', '--wrap=none'];
+			const opts: { timeout: number; maxBuffer: number; cwd?: string } = { timeout: 60000, maxBuffer: 32 * 1024 * 1024 };
+			if (mediaDir) {
+				// Extract images into <mediaDir>/media/ and keep the references relative
+				// (`media/xxx.png`) by running from mediaDir; the review pane resolves
+				// them against the docs/ dir where the extracted markdown lives.
+				try { fs.mkdirSync(mediaDir, { recursive: true }); } catch { /* best-effort */ }
+				args.push('--extract-media=.');
+				opts.cwd = mediaDir;
+			}
+			const { stdout } = await execFileAsync(pandoc, args, opts);
 			return stdout;
 		} catch (e) {
 			return `[Could not extract ${ext} (pandoc): ${(e as Error).message.slice(0, 200)}. Provide the paper as .md if this persists.]`;
@@ -327,11 +340,11 @@ export function buildReviewTools(): ToolDefinition[] {
 					} else {
 						const abs = findExportFile(meta.paperId, fmt === 'docx' ? 'docx' : 'tex');
 						manuscript = (abs && fs.existsSync(abs))
-							? { name: path.basename(abs), text: await extractText(abs) }
+							? { name: path.basename(abs), text: await extractText(abs, path.join(dir, 'docs')) }
 							: { name: `${meta.title}.md`, text: getManuscript(meta.paperId) || '' };
 					}
 				} else if (meta.draftFile) {
-					manuscript = { name: path.basename(meta.draftFile), text: await extractText(path.join(dir, meta.draftFile)) };
+					manuscript = { name: path.basename(meta.draftFile), text: await extractText(path.join(dir, meta.draftFile), path.join(dir, 'docs')) };
 				}
 				if (!manuscript) { return err(`Review "${execId}" has no main manuscript file.`); }
 
