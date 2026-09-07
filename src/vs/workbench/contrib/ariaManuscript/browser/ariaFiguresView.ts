@@ -90,8 +90,9 @@ export class AriaFiguresView extends ViewPane {
 			Object.assign(thumb.style, { width: '78px', height: '78px', objectFit: 'cover', border: '1px solid var(--vscode-widget-border, rgba(127,127,127,0.3))', borderRadius: '4px', background: 'var(--vscode-editorWidget-background)' });
 			const cap = append(cell, $('div')); cap.textContent = f.name;
 			Object.assign(cap.style, { fontSize: '10px', opacity: '0.7', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' });
-			// Built-in image preview (centers/fits correctly), not the result-viewer plugin.
-			cell.onclick = () => { void this.editorService.openEditor({ resource: f.resource, options: { pinned: true, override: 'imagePreview.previewEditor' } }); };
+			// Open in the result viewer (the image-viewer plugin), same as clicking a
+			// result file elsewhere.
+			cell.onclick = () => { void this.editorService.openEditor({ resource: f.resource, options: { pinned: true } }); };
 		}
 	}
 
