@@ -302,7 +302,7 @@ export function buildTools(): ToolDefinition[] {
 		},
 		{
 			name: 'propose_manuscript_revision',
-			description: 'Propose a revised manuscript for the user to REVIEW before it is applied. Pass the FULL revised Markdown (keep unchanged sections/paragraphs verbatim so only your actual edits are highlighted). This does NOT overwrite manuscript.md - it stages the change; Qoka opens a review tab where the user accepts/rejects each changed section or paragraph (added = yellow, removed = red). Use this for partial edits/revisions; use set_manuscript only for the initial full draft. After the user reviews, run export_paper and tell them the output path.',
+			description: 'Propose a revised manuscript for the user to REVIEW before it is applied. Pass the FULL revised Markdown (keep unchanged sections/paragraphs verbatim so only your actual edits are highlighted). This does NOT overwrite manuscript.md - it stages the change; Qoka shows it inline in the Manuscript tab (Write step, Source view) where the user accepts/rejects each changed section or paragraph (added = yellow, removed = red). Use this for partial edits/revisions; use set_manuscript only for the initial full draft. After the user reviews, run export_paper and tell them the output path.',
 			inputSchema: {
 				type: 'object',
 				properties: {
@@ -319,16 +319,16 @@ export function buildTools(): ToolDefinition[] {
 				if (md === undefined) { return err('`markdown` is required.'); }
 				try {
 					setProposal(r.id, md);
-					// Open (or focus) the review tab even if the paper writer tab was
-					// closed - otherwise the staged revision is invisible. Best-effort.
+					// Open (or focus) the Paper Writer tab even if it was closed - otherwise
+					// the staged revision is invisible. It shows the review inline. Best-effort.
 					try {
 						const folder = vscode.workspace.workspaceFolders?.[0];
 						if (folder) {
 							const paperUri = vscode.Uri.joinPath(folder.uri, '.qoka', 'manuscript', 'draft', r.id);
 							await vscode.commands.executeCommand('aria.paperWriter.openReview', paperUri);
 						}
-					} catch { /* opening the review tab is best-effort */ }
-					return ok(`Staged a proposed revision and opened the review tab in Qoka (the manuscript-review tab where the user accepts/rejects each change). Tell the user you opened the review tab. Wait for them to review; once they accept, run export_paper and tell them the output path.`);
+					} catch { /* opening the tab is best-effort */ }
+					return ok(`Staged a proposed revision. Qoka shows it inline in the Manuscript tab (Write step, Source view) where the user accepts/rejects each change. Tell the user to review it there. Wait for them to review; once they accept, run export_paper and tell them the output path.`);
 				} catch (e) { return err(`propose_manuscript_revision failed: ${(e as Error).message}`); }
 			},
 		},

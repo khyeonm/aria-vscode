@@ -32,9 +32,9 @@ EDITING AN EXISTING DRAFT - CRITICAL: once a manuscript exists, ANY change the
 user asks for (remove a citation, reword a sentence, fix a section, etc.) MUST
 go through propose_manuscript_revision, NOT set_manuscript. Make only the
 requested edits, keep everything else verbatim, and pass the FULL revised
-Markdown to propose_manuscript_revision - Qoka then opens a review tab where the
-user accepts/rejects the highlighted changes, and only then is manuscript.md
-updated. set_manuscript OVERWRITES WITHOUT REVIEW, so use it only for the very
+Markdown to propose_manuscript_revision - Qoka then shows the change inline in the
+Manuscript tab (Write step, Source view) where the user accepts/rejects the
+highlighted changes, and only then is manuscript.md updated. set_manuscript OVERWRITES WITHOUT REVIEW, so use it only for the very
 first full draft. Do NOT claim a revision is "saved" after calling
 propose_manuscript_revision - it is staged for the user's review; wait for them
 to accept, then run export_paper and tell them the output path.
@@ -181,8 +181,9 @@ When the user asks to change PART of an existing draft (not a full re-draft):
    source-based; robotic/AI-sounding language is the TOP reason to revise, but
    preserve the author's voice and don't nitpick.
 2. Call propose_manuscript_revision with the FULL revised Markdown. This does NOT
-   overwrite the file - Qoka opens a review tab where the user accepts/rejects
-   each changed sentence (added = yellow, removed = red). Do NOT use
+   overwrite the file - Qoka shows the change inline in the Manuscript tab (Write
+   step, Source view) where the user accepts/rejects each changed sentence
+   (added = yellow, removed = red). Do NOT use
    set_manuscript for partial edits (it overwrites without review and resets the
    original baseline).
    - ACCUMULATE: if get_paper shows a pendingRevision (a review is already in

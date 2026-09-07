@@ -55,10 +55,13 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 	]
 );
 
+// A staged revision is now reviewed INLINE in the Paper Writer tab (Write step,
+// Source view), not in a separate Manuscript Review tab. Open/focus the Paper
+// Writer for this paper so the inline review shows.
 CommandsRegistry.registerCommand('aria.paperWriter.openReview', async (accessor, resource?: unknown) => {
 	const uri = reviveUri(resource);
 	if (!uri) { return; }
-	await accessor.get(IEditorService).openEditor(new AriaManuscriptReviewInput(uri), { pinned: true });
+	await accessor.get(IEditorService).openEditor(new AriaPaperWriterInput(uri), { pinned: true });
 });
 
 // --- Commands ---------------------------------------------------------------
