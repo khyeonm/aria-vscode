@@ -37,7 +37,7 @@
 					{ "filenamePattern": "*.tif" },
 					{ "filenamePattern": "*.tiff" }
 				],
-				"priority": "default"
+				"priority": "option"
 			},
 			{
 				"viewType": "qoka.autopipe.fileViewer",

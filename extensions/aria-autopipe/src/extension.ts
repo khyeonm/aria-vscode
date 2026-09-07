@@ -365,10 +365,15 @@ export function activate(context: vscode.ExtensionContext): void {
 	// First-run plugin bootstrap. Fires non-blocking so the rest of activate
 	// can proceed; the user sees a progress toast while it runs. Once it settles,
 	// bind each installed viewer's file extensions to the Qoka Result Viewer.
+	// Run the two editorAssociations syncs SEQUENTIALLY - both read-modify-write
+	// workbench.editorAssociations, so running them concurrently races and one can
+	// clobber the other's image association, leaving images with no association and
+	// VS Code then prompting "multiple default editors" on every open.
 	void bootstrapDefaultPlugins(services.plugins, services.hub)
-		.finally(() => { void syncViewerAssociations(services.plugins); });
-	// Apply any disabled native viewers (PDF/Image) at startup.
-	void syncNativeViewerAssociations(services.plugins);
+		.finally(async () => {
+			await syncViewerAssociations(services.plugins);
+			await syncNativeViewerAssociations(services.plugins);
+		});
 
 	// Result Viewer management (the Settings "Result Viewer" section calls these):
 	// list installed + Hub viewers, install / remove one, and re-sync associations.

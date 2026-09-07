@@ -455,7 +455,7 @@ configurationRegistry.registerConfiguration({
 		'explorer.autoRevealExclude': {
 			'type': 'object',
 			'markdownDescription': nls.localize('autoRevealExclude', "Configure paths or [glob patterns](https://aka.ms/vscode-glob-patterns) for excluding files and folders from being revealed and selected in the Explorer when they are opened. Glob patterns are always evaluated relative to the path of the workspace folder unless they are absolute paths."),
-			'default': { '**/node_modules': true, '**/bower_components': true },
+			'default': { '**/node_modules': true, '**/bower_components': true, '**/.qoka': true, '**/.qoka/**': true },
 			'additionalProperties': {
 				'anyOf': [
 					{
