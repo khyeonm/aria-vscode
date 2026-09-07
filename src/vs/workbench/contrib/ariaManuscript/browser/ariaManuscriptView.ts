@@ -17,7 +17,6 @@ import { IContextKeyService } from '../../../../platform/contextkey/common/conte
 import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
 import { IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
-import { FileAccess } from '../../../../base/common/network.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
@@ -48,8 +47,6 @@ export class AriaManuscriptView extends ViewPane {
 	 *  runs both append their sections and the list duplicates (e.g. a second
 	 *  "Reviews" header on top). */
 	private refreshSeq = 0;
-	/** Collapsed state of the Figures section (like the Analysis tab's Changes). */
-	private figuresCollapsed = false;
 
 	constructor(
 		options: IViewPaneOptions,
@@ -74,8 +71,7 @@ export class AriaManuscriptView extends ViewPane {
 		this._register(this.fileService.onDidFilesChange(e => {
 			const papers = this.papersDir();
 			const reviews = this.reviewsDir();
-			const figures = this.figuresDir();
-			if ((papers && e.affects(papers)) || (reviews && e.affects(reviews)) || (figures && e.affects(figures))) { void this.refresh(); }
+			if ((papers && e.affects(papers)) || (reviews && e.affects(reviews))) { void this.refresh(); }
 		}));
 	}
 
@@ -96,9 +92,6 @@ export class AriaManuscriptView extends ViewPane {
 	private folderUri(): URI | undefined { return this.workspaceContextService.getWorkspace().folders[0]?.uri; }
 	private papersDir(): URI | undefined { const f = this.folderUri(); return f ? joinPath(f, '.qoka', 'manuscript', 'draft') : undefined; }
 	private reviewsDir(): URI | undefined { const f = this.folderUri(); return f ? joinPath(f, '.qoka', 'manuscript', 'review') : undefined; }
-	/** BioRender / generated figures are stored hidden here; the Figures section
-	 *  below is the ONLY place they surface (never the Analysis file tree). */
-	private figuresDir(): URI | undefined { const f = this.folderUri(); return f ? joinPath(f, '.qoka', 'figures') : undefined; }
 
 	private async refresh(): Promise<void> {
 		const root = this.viewBody;
@@ -117,7 +110,6 @@ export class AriaManuscriptView extends ViewPane {
 		const reviewsDir = this.reviewsDir();
 		const paperExports = await Promise.all(papers.map(p => this.loadExports(joinPath(p.folder, 'export'))));
 		const reviewExports = await Promise.all(reviews.map(r => reviewsDir ? this.loadExports(joinPath(reviewsDir, r.execId, 'export')) : Promise.resolve([])));
-		const figures = isEmpty ? [] : await this.loadFigures();
 
 		if (seq !== this.refreshSeq) { return; } // a newer refresh superseded this one
 
@@ -157,63 +149,6 @@ export class AriaManuscriptView extends ViewPane {
 			});
 		}
 
-		// Figures: generated figures live hidden in .qoka/figures; this is where the
-		// user sees them (thumbnails). Collapsible, like the Analysis tab's Changes.
-		// Clicking a thumbnail opens the image in an editor tab.
-		const figBody = $('div');
-		if (figures.length === 0) {
-			this.empty(figBody, localize('aria.manuscript.noFigures', "No figures yet. Ask the chat to create one."));
-		} else {
-			this.renderFigures(figBody, figures);
-		}
-		this.collapsibleSection(root, localize('aria.manuscript.figures', "Figures"), figBody);
-	}
-
-	/** A section whose header has a chevron that folds its body away (Figures). */
-	private collapsibleSection(root: HTMLElement, text: string, body: HTMLElement): void {
-		const h = append(root, $('div'));
-		Object.assign(h.style, { display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer', fontSize: '11px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.05em', opacity: '0.6', margin: '10px 4px 4px', userSelect: 'none' });
-		const chev = append(h, $(`span.codicon.${this.figuresCollapsed ? 'codicon-chevron-right' : 'codicon-chevron-down'}`)) as HTMLElement;
-		Object.assign(chev.style, { fontSize: '14px' });
-		const label = append(h, $('span')); label.textContent = text;
-		root.appendChild(body);
-		body.style.display = this.figuresCollapsed ? 'none' : '';
-		h.onclick = () => {
-			this.figuresCollapsed = !this.figuresCollapsed;
-			body.style.display = this.figuresCollapsed ? 'none' : '';
-			chev.className = `codicon ${this.figuresCollapsed ? 'codicon-chevron-right' : 'codicon-chevron-down'}`;
-		};
-	}
-
-	/** List the generated figures under .qoka/figures (images only, sorted). */
-	private async loadFigures(): Promise<{ name: string; resource: URI }[]> {
-		const dir = this.figuresDir();
-		if (!dir) { return []; }
-		try {
-			const stat = await this.fileService.resolve(dir);
-			const isImg = /\.(png|jpe?g|gif|webp|bmp|svg)$/i;
-			const files = (stat.children ?? []).filter(c => !c.isDirectory && isImg.test(c.name)).map(c => ({ name: c.name, resource: c.resource }));
-			files.sort((a, b) => a.name.localeCompare(b.name));
-			return files;
-		} catch { return []; }
-	}
-
-	/** Thumbnail grid of generated figures; a click opens the image in an editor
-	 *  tab (the .qoka path is never shown in the Analysis tree). */
-	private renderFigures(root: HTMLElement, figures: { name: string; resource: URI }[]): void {
-		const grid = append(root, $('div'));
-		Object.assign(grid.style, { display: 'flex', flexWrap: 'wrap', gap: '8px', padding: '2px 0 6px' });
-		for (const f of figures) {
-			const cell = append(grid, $('div'));
-			Object.assign(cell.style, { width: '78px', cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: '3px' });
-			cell.title = f.name;
-			const thumb = append(cell, $('img')) as HTMLImageElement;
-			thumb.src = FileAccess.uriToBrowserUri(f.resource).toString();
-			Object.assign(thumb.style, { width: '78px', height: '78px', objectFit: 'cover', border: '1px solid var(--vscode-widget-border, rgba(127,127,127,0.3))', borderRadius: '4px', background: 'var(--vscode-editorWidget-background)' });
-			const cap = append(cell, $('div')); cap.textContent = f.name;
-			Object.assign(cap.style, { fontSize: '10px', opacity: '0.7', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' });
-			cell.onclick = () => { void this.editorService.openEditor({ resource: f.resource, options: { pinned: true } }); };
-		}
 	}
 
 	/** Read a row's export/ folder file list (sorted). [] when there is no folder. */

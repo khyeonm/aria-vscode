@@ -17,6 +17,7 @@ import { IWorkbenchContribution, IWorkbenchContributionsRegistry, Extensions as 
 import { ViewContainer, ViewContainerLocation, IViewContainersRegistry, Extensions as ViewContainerExtensions, IViewsRegistry, Extensions as ViewExtensions, IViewDescriptor } from '../../../common/views.js';
 import { ViewPaneContainer } from '../../../browser/parts/views/viewPaneContainer.js';
 import { AriaManuscriptView } from './ariaManuscriptView.js';
+import { AriaFiguresView } from './ariaFiguresView.js';
 import { registerAriaTabHelpTitleAction } from '../../aria/browser/ariaHelpEditor.js';
 
 // The consolidated "Manuscript" tab merges the old Paper Writing and Peer Review
@@ -58,7 +59,18 @@ const manuscriptView: IViewDescriptor = {
 	order: 1,
 };
 
-Registry.as<IViewsRegistry>(ViewExtensions.ViewsRegistry).registerViews([manuscriptView], manuscriptContainer);
+// Figures: a SEPARATE collapsible view under Manuscript (like the Analysis tab's
+// Changes/Snapshots), showing the generated figures kept in .qoka/figures.
+const figuresView: IViewDescriptor = {
+	id: AriaFiguresView.ID,
+	name: localize2('aria.figures.viewName', "Figures"),
+	ctorDescriptor: new SyncDescriptor(AriaFiguresView),
+	canToggleVisibility: true,
+	canMoveView: false,
+	order: 2,
+};
+
+Registry.as<IViewsRegistry>(ViewExtensions.ViewsRegistry).registerViews([manuscriptView, figuresView], manuscriptContainer);
 
 // "How to use?" link in the view's title bar.
 registerAriaTabHelpTitleAction(AriaManuscriptView.ID, 'manuscript');
