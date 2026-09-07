@@ -64,13 +64,13 @@ export class BioRenderSection extends SettingsSection {
 		const dot = this.dot, label = this.label, button = this.button;
 		if (!dot || !label || !button) { return; }
 		if (checking) {
+			// No button while the status is still loading - only the dot + label.
 			dot.style.background = 'var(--vscode-charts-yellow, #e6c200)';
 			label.textContent = 'BioRender: checking...';
-			button.textContent = 'Connect to BioRender';
-			this.primaryButton(button);
-			button.disabled = true;
+			button.hidden = true;
 			return;
 		}
+		button.hidden = false;
 		if (status.connected) {
 			dot.style.background = 'var(--vscode-charts-green, #4caf50)';
 			label.textContent = status.account ? `BioRender: connected as ${status.account}` : 'BioRender: connected';

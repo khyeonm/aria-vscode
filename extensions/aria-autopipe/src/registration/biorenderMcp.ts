@@ -167,7 +167,10 @@ export async function loginBioRender(): Promise<{ ok: boolean; message: string }
 			if (m && /(authorize|oauth|auth|login|biorender)/i.test(m[0])) {
 				browserOpened = true;
 				const authUrl = m[0];
-				void vscode.env.openExternal(vscode.Uri.parse(authUrl));
+				// The CLI opens the browser itself; we do NOT also call openExternal - that
+				// double-opened the page and popped VS Code's "open external website?"
+				// prompt AFTER the sign-in had already completed. We only stand up the
+				// loopback interceptor for the "paste redirect URL" flow (Case B).
 				startInterceptor(authUrl);
 			}
 		};

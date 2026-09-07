@@ -430,10 +430,23 @@ export function activate(context: vscode.ExtensionContext): void {
 	// Login runs the AI CLI's OWN OAuth (`claude mcp login biorender`, which opens
 	// the browser and stores the token in the CLI) - a Qoka-injected header is
 	// ignored by the CLI for OAuth servers, so this is what actually authenticates.
+	// `claude mcp get` does NOT reliably show "needs authentication" right after a
+	// logout, so parsing it leaves the Settings row stuck on "connected". We make an
+	// explicit user Disconnect AUTHORITATIVE via a globalState flag: logout sets it
+	// (status is then forced disconnected), login clears it (status falls back to the
+	// live CLI check, which correctly turns green once the sign-in completes).
+	const BIORENDER_DISCONNECTED = 'aria.biorender.disconnected';
 	context.subscriptions.push(
-		vscode.commands.registerCommand('aria.biorender.getStatus', () => bioRenderStatus()),
-		vscode.commands.registerCommand('aria.biorender.login', () => loginBioRender()),
-		vscode.commands.registerCommand('aria.biorender.logout', () => logoutBioRender()),
+		vscode.commands.registerCommand('aria.biorender.getStatus', () =>
+			context.globalState.get<boolean>(BIORENDER_DISCONNECTED) ? { connected: false } : bioRenderStatus()),
+		vscode.commands.registerCommand('aria.biorender.login', async () => {
+			await context.globalState.update(BIORENDER_DISCONNECTED, false);
+			return loginBioRender();
+		}),
+		vscode.commands.registerCommand('aria.biorender.logout', async () => {
+			await logoutBioRender();
+			await context.globalState.update(BIORENDER_DISCONNECTED, true);
+		}),
 	);
 	// Register the built-in BioRender MCP now (headerless) so it is present from
 	// the start; the user authenticates it later from the Settings BioRender
