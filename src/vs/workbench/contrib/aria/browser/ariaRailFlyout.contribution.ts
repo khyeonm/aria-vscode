@@ -165,7 +165,16 @@ export class AriaRailFlyoutContribution extends Disposable implements IWorkbench
 			const viewContainer = this.viewDescriptorService.getViewContainerById(id);
 			const model = viewContainer ? this.viewDescriptorService.getViewContainerModel(viewContainer) : undefined;
 			this.addRow(container, model?.title ?? id, model?.icon, id === activeId, () => {
-				void this.paneCompositeService.openPaneComposite(id, ViewContainerLocation.Sidebar, true);
+				// Toggle: clicking the row for the tab that is ALREADY open (sidebar
+				// visible + this container active) hides the sidebar, matching the real
+				// activity bar's default click behaviour. Otherwise open/focus it.
+				const sidebarVisible = this.layoutService.isVisible(Parts.SIDEBAR_PART);
+				const isActive = this.paneCompositeService.getActivePaneComposite(ViewContainerLocation.Sidebar)?.getId() === id;
+				if (sidebarVisible && isActive) {
+					this.layoutService.setPartHidden(true, Parts.SIDEBAR_PART);
+				} else {
+					void this.paneCompositeService.openPaneComposite(id, ViewContainerLocation.Sidebar, true);
+				}
 				this.close();
 			});
 		}
