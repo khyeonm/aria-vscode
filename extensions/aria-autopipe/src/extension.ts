@@ -28,7 +28,7 @@ import { PluginService, DEFAULT_PLUGIN_NAMES, resolveDefaultNames, NATIVE_VIEWER
 import { openHubPanel } from './panels/hubPanel';
 import { openPluginsPanel } from './panels/pluginsPanel';
 import { BioRenderAuthService } from './biorender/bioRenderAuth';
-import { registerBioRenderWithProviders, unregisterBioRenderFromProviders } from './registration/biorenderMcp';
+import { registerBioRenderWithProviders } from './registration/biorenderMcp';
 import { ensureWorkspaceScaffold } from './common/workspaceSync';
 import { NotebookKernel } from './notebook/controller';
 
@@ -65,23 +65,21 @@ let extensionContext: vscode.ExtensionContext | undefined;
 // it into the AI CLIs as a bearer header; login lives in Settings. lastBioRenderToken
 // dedupes re-registration when the registration coordinator re-runs.
 let bioRenderAuth: BioRenderAuthService | undefined;
-let lastBioRenderToken: string | null = null;
+let lastBioRenderState: string | null = null;
 
-/** (Re)register or drop the built-in BioRender MCP based on the stored login.
- *  Refreshes the token if needed. Deduped by token so the coordinator can call
- *  it freely. `force` bypasses the dedupe (login / logout). */
+/** Register the built-in BioRender MCP. With a stored login it registers WITH
+ *  the account token (bearer header); without one it still registers the server
+ *  (headerless) so it is present from the start and the user can connect later
+ *  in Settings. Refreshes the token if needed. Deduped by state so the
+ *  coordinator can call it freely; `force` bypasses the dedupe (login/logout). */
 async function syncBioRenderRegistration(force = false): Promise<void> {
 	if (!bioRenderAuth) { return; }
 	try {
 		const token = await bioRenderAuth.getValidAccessToken();
-		if (token) {
-			if (!force && token === lastBioRenderToken) { return; }
-			await registerBioRenderWithProviders(token);
-			lastBioRenderToken = token;
-		} else {
-			if (force || lastBioRenderToken !== null) { await unregisterBioRenderFromProviders(); }
-			lastBioRenderToken = null;
-		}
+		const state = token ?? 'anon';
+		if (!force && state === lastBioRenderState) { return; }
+		await registerBioRenderWithProviders(token ?? undefined);
+		lastBioRenderState = state;
 	} catch (err) {
 		console.warn('[aria-autopipe] syncBioRenderRegistration failed:', (err as Error).message);
 	}
@@ -440,9 +438,9 @@ export function activate(context: vscode.ExtensionContext): void {
 			await syncBioRenderRegistration(true);
 		}),
 	);
-	// Returning user: if a token is already stored, register the built-in
-	// BioRender MCP now (silent refresh); if logged out (or the refresh fails),
-	// clear any stale entry so the CLI never falls back to its own OAuth prompt.
+	// Register the built-in BioRender MCP now so it is present from the start:
+	// with the account token if the user is already connected, otherwise
+	// headerless (the user connects later in Settings). Fire-and-forget.
 	void syncBioRenderRegistration(true);
 
 	// Keep the Hub client's base URL in sync with config changes (the user
