@@ -268,7 +268,7 @@ async function openFirstFileInFolder(panel: vscode.WebviewPanel, folder: string)
 	}
 	panel.webview.postMessage({
 		type: 'aria.viewer.placeholder',
-		text: 'Click a file in the highlighted folder to view it here.',
+		text: 'No file open.',
 	});
 }
 
@@ -731,12 +731,11 @@ function renderShellHtml(webview: vscode.Webview): string {
 <body>
 	<div class="wrap">
 		<div class="guide">
-			<div>Pick a file from the highlighted folder (blue outline) in the Analysis tab to view it here.</div>
-			<div>To open files with an installed extension viewer instead, close this viewer tab and click each file.</div>
+			<div>To open this file type with the VS Code built-in viewer instead, go to the Settings tab's Result Viewer section, click "Manage Result Viewers", and remove the viewer plugin you do not want.</div>
 		</div>
 		<div class="header" id="right-header"><span class="meta">No file selected</span></div>
 		<div class="viewer-host" id="viewer-host">
-			<div class="placeholder">Pick a file from the highlighted folder to view it here.</div>
+			<div class="placeholder">No file open.</div>
 		</div>
 	</div>
 	<script>
