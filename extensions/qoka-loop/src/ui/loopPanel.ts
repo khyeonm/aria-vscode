@@ -369,7 +369,7 @@ function renderHtml(webview: vscode.Webview): string {
 		.meta div strong { opacity: 0.6; margin-right: 5px; font-weight: 500; }
 		.reason { font-size: 12px; padding: 8px 12px; border-radius: 4px; margin-bottom: 18px; background: var(--vscode-inputValidation-warningBackground, #4a3c00); border: 1px solid var(--vscode-inputValidation-warningBorder, #b8860055); }
 		.section { margin-bottom: 22px; }
-		.section > h2 { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; opacity: 0.6; margin: 0 0 8px; }
+		.section > h2 { font-size: 15px; font-weight: 600; margin: 0 0 8px; }
 		.steps { margin: 0; padding-left: 18px; font-size: 13px; }
 		.steps li { margin-bottom: 3px; }
 		.checks { display: flex; flex-direction: column; gap: 7px; }
@@ -405,8 +405,8 @@ function renderHtml(webview: vscode.Webview): string {
 		/* Code + Results shown side by side, each as a single inline tree (folders expand, files are leaves). */
 		.treecols { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
 		.treecol { flex: 1 1 240px; min-width: 240px; }
-		.treecol h2 { margin-top: 0; }
-		.treepane { border: 1px solid var(--vscode-widget-border, rgba(127,127,127,0.3)); border-radius: 6px; overflow: auto; max-height: 340px; min-height: 80px; background: var(--vscode-editorWidget-background); padding: 4px 0; }
+		.treecol h2 { font-size: 15px; font-weight: 600; margin: 0 0 8px; }
+		.treepane { border: 1px solid var(--vscode-widget-border, rgba(127,127,127,0.3)); border-radius: 6px; overflow: auto; max-height: 340px; min-height: 80px; background: transparent; padding: 4px 0; }
 				/* Folder tree (LEFT): one row per folder, chevron + indent. Files (RIGHT) are plain names, no tag. */
 		.tfolder { font-size: 12px; padding: 4px 6px; cursor: pointer; display: flex; align-items: center; gap: 4px; border-left: 2px solid transparent; font-family: var(--vscode-editor-font-family); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 		.tfolder:hover { background: var(--vscode-list-hoverBackground); }
@@ -690,7 +690,7 @@ function renderHtml(webview: vscode.Webview): string {
 				l.budget.maxMin + ' minutes elapsed',
 				'No progress: the same failure 3 times',
 			];
-			h += '<div class="section"><h2>Stops when (whichever comes first)</h2><ul class="steps">'
+			h += '<div class="section"><h2>Loop stop conditions (whichever comes first)</h2><ul class="steps">'
 				+ stopItems.map(x => '<li>' + x + '</li>').join('') + '</ul></div>';
 
 			// Always show the History frame (headers) so it is there from the start; the body is empty
