@@ -27,8 +27,7 @@ import { registerSetupCommands } from './commands/setupCommands';
 import { PluginService, DEFAULT_PLUGIN_NAMES, resolveDefaultNames, NATIVE_VIEWER_NAMES } from './plugins/pluginService';
 import { openHubPanel } from './panels/hubPanel';
 import { openPluginsPanel } from './panels/pluginsPanel';
-import { BioRenderAuthService } from './biorender/bioRenderAuth';
-import { registerBioRenderWithProviders } from './registration/biorenderMcp';
+import { ensureBioRenderRegistered, loginBioRender, logoutBioRender, bioRenderStatus } from './registration/biorenderMcp';
 import { ensureWorkspaceScaffold } from './common/workspaceSync';
 import { NotebookKernel } from './notebook/controller';
 
@@ -61,29 +60,10 @@ let lastEnvRegistration: { claude: ClientRegistration; codex: ClientRegistration
 // reload prompt, and it runs outside activate()'s scope.
 let extensionContext: vscode.ExtensionContext | undefined;
 
-// BioRender MCP (built-in remote OAuth server). Qoka owns the token and injects
-// it into the AI CLIs as a bearer header; login lives in Settings. lastBioRenderToken
-// dedupes re-registration when the registration coordinator re-runs.
-let bioRenderAuth: BioRenderAuthService | undefined;
-let lastBioRenderState: string | null = null;
-
-/** Register the built-in BioRender MCP. With a stored login it registers WITH
- *  the account token (bearer header); without one it still registers the server
- *  (headerless) so it is present from the start and the user can connect later
- *  in Settings. Refreshes the token if needed. Deduped by state so the
- *  coordinator can call it freely; `force` bypasses the dedupe (login/logout). */
-async function syncBioRenderRegistration(force = false): Promise<void> {
-	if (!bioRenderAuth) { return; }
-	try {
-		const token = await bioRenderAuth.getValidAccessToken();
-		const state = token ?? 'anon';
-		if (!force && state === lastBioRenderState) { return; }
-		await registerBioRenderWithProviders(token ?? undefined);
-		lastBioRenderState = state;
-	} catch (err) {
-		console.warn('[aria-autopipe] syncBioRenderRegistration failed:', (err as Error).message);
-	}
-}
+// BioRender MCP (built-in remote OAuth server). The server is registered
+// headerless so it is present from the start; the actual auth is the AI CLI's
+// own OAuth, driven from the Settings BioRender section via `claude mcp login`
+// (a statically injected token header is ignored by the CLI for OAuth servers).
 
 // globalState flag: the user pressed "Continue without the run environment" during
 // first-run WSL/Ubuntu setup. While set, we don't auto-install or gate on launch -
@@ -129,7 +109,6 @@ let wslSetupPending = false;
 export function activate(context: vscode.ExtensionContext): void {
 	console.log('[aria-autopipe] activate()');
 	extensionContext = context;
-	bioRenderAuth = new BioRenderAuthService(context.secrets);
 
 	// On every activation (idempotent, best-effort): migrate any old autopipe/ +
 	// mixed layout to the unified data/analysis/results tree AND make sure those
@@ -422,26 +401,18 @@ export function activate(context: vscode.ExtensionContext): void {
 	}));
 
 	// BioRender MCP: login/logout/status for the Settings "BioRender" section.
-	// Login runs Qoka's own OAuth (loopback), stores the token, and injects it
-	// into the AI CLIs as a bearer header so the chat uses the user's account.
+	// Login runs the AI CLI's OWN OAuth (`claude mcp login biorender`, which opens
+	// the browser and stores the token in the CLI) - a Qoka-injected header is
+	// ignored by the CLI for OAuth servers, so this is what actually authenticates.
 	context.subscriptions.push(
-		vscode.commands.registerCommand('aria.biorender.getStatus', async () => (bioRenderAuth ? bioRenderAuth.getStatus() : { connected: false })),
-		vscode.commands.registerCommand('aria.biorender.login', async () => {
-			if (!bioRenderAuth) { return { ok: false, message: 'BioRender service not ready.' }; }
-			const r = await bioRenderAuth.login();
-			if (r.ok) { await syncBioRenderRegistration(true); }
-			return r;
-		}),
-		vscode.commands.registerCommand('aria.biorender.logout', async () => {
-			if (!bioRenderAuth) { return; }
-			await bioRenderAuth.logout();
-			await syncBioRenderRegistration(true);
-		}),
+		vscode.commands.registerCommand('aria.biorender.getStatus', () => bioRenderStatus()),
+		vscode.commands.registerCommand('aria.biorender.login', () => loginBioRender()),
+		vscode.commands.registerCommand('aria.biorender.logout', () => logoutBioRender()),
 	);
-	// Register the built-in BioRender MCP now so it is present from the start:
-	// with the account token if the user is already connected, otherwise
-	// headerless (the user connects later in Settings). Fire-and-forget.
-	void syncBioRenderRegistration(true);
+	// Register the built-in BioRender MCP now (headerless) so it is present from
+	// the start; the user authenticates it later from the Settings BioRender
+	// section. Fire-and-forget.
+	void ensureBioRenderRegistered();
 
 	// Keep the Hub client's base URL in sync with config changes (the user
 	// can switch registries by editing config, even though we don't yet
@@ -1086,9 +1057,9 @@ async function refreshAiRegistrations(): Promise<{ changed: boolean; registered:
 				}
 			}
 
-			// Keep the built-in BioRender MCP registered too (only re-adds when the
-			// token changed, so this is cheap on repeat coordinator runs).
-			void syncBioRenderRegistration();
+			// Keep the built-in BioRender MCP registered too (idempotent: skips when
+			// the CLI already has it, so this is cheap on repeat coordinator runs).
+			void ensureBioRenderRegistered();
 
 			return {
 				changed: newlyConnected.length > 0,

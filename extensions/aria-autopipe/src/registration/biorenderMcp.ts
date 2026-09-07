@@ -7,22 +7,21 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import * as vscode from 'vscode';
 import { candidateClaudePaths, candidateCodexPaths } from '../detection/claudeCodeDetector';
-import { BIORENDER_MCP_URL } from '../biorender/bioRenderAuth';
 
 const execAsync = promisify(exec);
 
 /**
- * Register the built-in BioRender MCP (a REMOTE OAuth server) with the AI CLIs,
- * injecting the signed-in user's token as an `Authorization: Bearer` header.
- * Because Qoka supplies the header, the CLI does not run its OWN `/mcp` OAuth -
- * the whole login stays in Qoka's Settings button. Called after login and, for
- * a returning user, at activation once a token is available.
+ * Built-in BioRender MCP (a REMOTE OAuth server at mcp.services.biorender.com).
  *
- * Claude Code supports `--transport http --header "Authorization: Bearer ..."`.
- * Codex header support varies by version, so it is best-effort and never fails
- * the operation (Claude still works).
+ * BioRender advertises OAuth, and the AI CLIs run their OWN OAuth for such a
+ * server - a statically injected `Authorization` header is ignored, so the
+ * earlier "Qoka owns the token" approach did NOT authenticate Claude. Instead we
+ * register the server (built-in, headerless) and drive the CLI's own OAuth from
+ * Settings via `claude mcp login` / `logout` (the CLI opens the browser and
+ * stores the token itself - the same thing the chat's `/mcp` Authenticate does).
  */
 
+export const BIORENDER_MCP_URL = 'https://mcp.services.biorender.com/mcp';
 const NAME = 'biorender';
 
 function quoteArg(s: string): string {
@@ -40,74 +39,82 @@ async function resolveBinary(primary: string, candidates: string[]): Promise<str
 
 function claudeScopeOpts(): { scope: 'local' | 'user'; opts: { timeout: number; cwd?: string } } {
 	const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-	return cwd ? { scope: 'local', opts: { timeout: 10000, cwd } } : { scope: 'user', opts: { timeout: 10000 } };
+	return cwd ? { scope: 'local', opts: { timeout: 15000, cwd } } : { scope: 'user', opts: { timeout: 15000 } };
 }
 
-/** (Re)register the built-in BioRender MCP with every AI CLI that is present.
- *  With a `token` it injects an `Authorization: Bearer` header so the chat uses
- *  the signed-in account and the CLI does NOT run its own OAuth. WITHOUT a token
- *  (not connected in Settings yet) it still registers the server so it is
- *  present from the start - Claude Code then offers its own `/mcp` login as a
- *  fallback until the user connects in Settings. Codex has no such fallback, so
- *  it is only registered once a token exists. Removes any prior entry first. */
-export async function registerBioRenderWithProviders(token?: string): Promise<void> {
-	await registerClaude(token);
-	if (token) { await registerCodex(token); }
-}
-
-/** Remove the BioRender registration from every AI CLI (on logout). */
-export async function unregisterBioRenderFromProviders(): Promise<void> {
+/** Ensure the built-in BioRender remote MCP is registered (headerless) with each
+ *  present AI CLI, so it is there from the start and can be authenticated via the
+ *  CLI's own OAuth. Idempotent: skips a CLI that already has it. */
+export async function ensureBioRenderRegistered(): Promise<void> {
 	const claude = await resolveBinary('claude', candidateClaudePaths());
 	if (claude) {
 		const q = quoteArg(claude);
-		for (const scope of ['user', 'project', 'local']) {
-			try { await execAsync(`${q} mcp remove ${NAME} --scope ${scope}`, { timeout: 10000 }); } catch { /* best-effort */ }
+		const { scope, opts } = claudeScopeOpts();
+		let exists = false;
+		try { await execAsync(`${q} mcp get ${NAME}`, opts); exists = true; } catch { /* not registered */ }
+		if (!exists) {
+			try {
+				await execAsync(`${q} mcp add --scope ${scope} ${NAME} ${quoteArg(BIORENDER_MCP_URL)} --transport http`, opts);
+				console.log('[aria-autopipe] registered built-in BioRender MCP with Claude Code');
+			} catch (err) {
+				console.error('[aria-autopipe] claude mcp add biorender failed:', (err as { stderr?: string }).stderr ?? String(err));
+			}
 		}
 	}
 	const codex = await resolveBinary('codex', candidateCodexPaths());
 	if (codex) {
-		try { await execAsync(`${quoteArg(codex)} mcp remove ${NAME}`, { timeout: 10000 }); } catch { /* best-effort */ }
+		const q = quoteArg(codex);
+		let exists = false;
+		try { await execAsync(`${q} mcp get ${NAME}`, { timeout: 10000 }); exists = true; } catch { /* not registered */ }
+		if (!exists) {
+			try { await execAsync(`${q} mcp add ${NAME} --url ${quoteArg(BIORENDER_MCP_URL)}`, { timeout: 10000 }); } catch { /* best-effort */ }
+		}
 	}
 }
 
-async function registerClaude(token?: string): Promise<void> {
+/** Run the CLI's own OAuth for BioRender (opens the browser, stores the token in
+ *  the CLI). This is what makes the chat actually authenticated - no `/mcp`
+ *  needed. Claude is required; Codex is best-effort (its build may lack login). */
+export async function loginBioRender(): Promise<{ ok: boolean; message: string }> {
+	await ensureBioRenderRegistered();
 	const claude = await resolveBinary('claude', candidateClaudePaths());
-	if (!claude) { return; }
+	if (!claude) { return { ok: false, message: 'Claude CLI not found on PATH or known install locations.' }; }
 	const q = quoteArg(claude);
-	const { scope, opts } = claudeScopeOpts();
-	// Remove any prior entry (across scopes) so the refreshed header lands clean.
-	for (const s of ['user', 'project', 'local']) {
-		try { await execAsync(`${q} mcp remove ${NAME} --scope ${s}`, opts); } catch { /* expected when absent */ }
-	}
-	const headerArg = token ? ` --header ${quoteArg(`Authorization: Bearer ${token}`)}` : '';
-	const addCmd = `${q} mcp add --scope ${scope} ${NAME} ${quoteArg(BIORENDER_MCP_URL)} --transport http${headerArg}`;
+	const { opts } = claudeScopeOpts();
 	try {
-		await execAsync(addCmd, opts);
-		console.log(`[aria-autopipe] registered BioRender MCP with Claude Code (${token ? 'with account token' : 'no token - Claude OAuth fallback'})`);
+		// Opens the browser and waits for the OAuth redirect; give it a long budget.
+		await execAsync(`${q} mcp login ${NAME}`, { ...opts, timeout: 300000 });
 	} catch (err) {
-		console.error('[aria-autopipe] claude mcp add biorender failed:', (err as { stderr?: string }).stderr ?? String(err));
+		return { ok: false, message: `BioRender login failed: ${(err as { stderr?: string }).stderr ?? (err as Error).message}` };
 	}
+	const codex = await resolveBinary('codex', candidateCodexPaths());
+	if (codex) { try { await execAsync(`${quoteArg(codex)} mcp login ${NAME}`, { timeout: 300000 }); } catch { /* codex may not support mcp login */ } }
+	return { ok: true, message: 'Connected to BioRender.' };
 }
 
-async function registerCodex(token: string): Promise<void> {
-	const codex = await resolveBinary('codex', candidateCodexPaths());
-	if (!codex) { return; }
-	const q = quoteArg(codex);
-	try { await execAsync(`${q} mcp remove ${NAME}`, { timeout: 10000 }); } catch { /* expected when absent */ }
-	// Codex header/bearer support varies by version. Try the documented bearer
-	// flag; if this Codex build does not accept it, skip (do NOT register a
-	// header-less entry, which would 401 and trigger Codex's own OAuth prompt).
-	const header = `Authorization: Bearer ${token}`;
-	const attempts = [
-		`${q} mcp add ${NAME} --url ${quoteArg(BIORENDER_MCP_URL)} --header ${quoteArg(header)}`,
-		`${q} mcp add ${NAME} --url ${quoteArg(BIORENDER_MCP_URL)} --bearer-token ${quoteArg(token)}`,
-	];
-	for (const cmd of attempts) {
-		try {
-			await execAsync(cmd, { timeout: 10000 });
-			console.log('[aria-autopipe] registered BioRender MCP with Codex');
-			return;
-		} catch { /* try next form */ }
+/** Clear the CLI's stored BioRender OAuth credentials. */
+export async function logoutBioRender(): Promise<void> {
+	const claude = await resolveBinary('claude', candidateClaudePaths());
+	if (claude) {
+		const { opts } = claudeScopeOpts();
+		try { await execAsync(`${quoteArg(claude)} mcp logout ${NAME}`, opts); } catch { /* best-effort */ }
 	}
-	console.warn('[aria-autopipe] Codex build does not accept a bearer header for remote MCP; BioRender left to Claude Code only.');
+	const codex = await resolveBinary('codex', candidateCodexPaths());
+	if (codex) { try { await execAsync(`${quoteArg(codex)} mcp logout ${NAME}`, { timeout: 10000 }); } catch { /* best-effort */ } }
+}
+
+/** Connected when Claude Code has BioRender registered and NOT flagged as needing
+ *  authentication (`claude mcp get biorender`). */
+export async function bioRenderStatus(): Promise<{ connected: boolean }> {
+	const claude = await resolveBinary('claude', candidateClaudePaths());
+	if (!claude) { return { connected: false }; }
+	const q = quoteArg(claude);
+	const { opts } = claudeScopeOpts();
+	try {
+		const out = await execAsync(`${q} mcp get ${NAME}`, opts);
+		const s = out.stdout;
+		return { connected: /biorender/i.test(s) && !/needs authentication/i.test(s) && !/not found/i.test(s) };
+	} catch {
+		return { connected: false };
+	}
 }
