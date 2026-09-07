@@ -476,9 +476,14 @@ export class AriaPaperWriterEditorPane extends EditorPane {
 
 		const tools = append(root, $('div'));
 		Object.assign(tools.style, { display: 'flex', alignItems: 'center', gap: '8px', margin: '8px 0 0' });
-		tools.appendChild(this.button(
-			kind === 'figure' ? localize('aria.paperWriter.addFigures', "Add figure") : localize('aria.paperWriter.addSources', "Add files"),
-			'ghost', () => void this.addAssets(kind)));
+		if (kind === 'figure') {
+			// Two ways to add a figure: from disk, or from the generated store
+			// (.qoka/figures) that the Manuscript tab's Figures section shows.
+			tools.appendChild(this.button(localize('aria.paperWriter.uploadFigure', "Upload figure"), 'ghost', () => void this.addAssets('aria.paper.addFigures')));
+			tools.appendChild(this.button(localize('aria.paperWriter.addFromFigures', "Add from Figures"), 'ghost', () => void this.addAssets('aria.paper.addFiguresFromSaved')));
+		} else {
+			tools.appendChild(this.button(localize('aria.paperWriter.addSources', "Add files"), 'ghost', () => void this.addAssets('aria.paper.addSources')));
+		}
 		const pending = items.filter(i => !i.summary).length;
 		if (pending > 0) {
 			// No prompt-copy: show an example to send to the AI chat (like the Focus
@@ -491,9 +496,8 @@ export class AriaPaperWriterEditorPane extends EditorPane {
 		}
 	}
 
-	private async addAssets(kind: 'figure' | 'source'): Promise<void> {
+	private async addAssets(cmd: string): Promise<void> {
 		if (!this.meta) { return; }
-		const cmd = kind === 'figure' ? 'aria.paper.addFigures' : 'aria.paper.addSources';
 		const added = await this.commandService.executeCommand<PaperAssetUI[]>(cmd, this.meta.id);
 		if (added && added.length > 0) {
 			await this.reload();

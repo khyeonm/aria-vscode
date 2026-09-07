@@ -183,44 +183,38 @@ export function activate(context: vscode.ExtensionContext): void {
 
 	// Add figures (images) or supplementary sources: pick files, copy them into
 	// the paper's figures/ or sources/ dir, and register them (summary pending).
-	const addAssets = async (id: string, kind: 'figure' | 'source'): Promise<PaperAsset[]> => {
+	// Upload a figure/source from disk (a file dialog).
+	const uploadAssets = async (id: string, kind: 'figure' | 'source'): Promise<PaperAsset[]> => {
 		const filters: { [name: string]: string[] } = kind === 'figure'
 			? { Images: ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'tiff'] }
 			: { Documents: ['pdf', 'doc', 'docx', 'txt', 'md', 'csv', 'json', 'xml', 'yaml', 'yml', 'py', 'ipynb'] };
-		// Figures: offer the generated figures (.qoka/figures) FIRST as a quick pick,
-		// with a Browse fallback. This is where BioRender/AI figures land.
-		if (kind === 'figure') {
-			const genDir = generatedFiguresDir();
-			let gen: string[] = [];
-			try {
-				if (genDir && fs.existsSync(genDir)) {
-					gen = fs.readdirSync(genDir).filter(n => /\.(png|jpe?g|gif|svg|webp|bmp|tiff)$/i.test(n)).sort();
-				}
-			} catch { /* no generated figures */ }
-			if (gen.length) {
-				const BROWSE = 'Browse files…';
-				type Item = vscode.QuickPickItem & { fsPath?: string };
-				const items: Item[] = gen.map(n => ({ label: n, description: 'generated', fsPath: path.join(genDir!, n) }));
-				items.push({ label: BROWSE, description: 'pick a file from disk' });
-				const picked = await vscode.window.showQuickPick(items, { canPickMany: true, placeHolder: 'Select generated figures to add, or Browse files…' });
-				if (!picked || picked.length === 0) { return []; }
-				const added: PaperAsset[] = [];
-				for (const p of picked) { if (p.fsPath) { added.push(addAsset(id, 'figure', p.fsPath)); } }
-				if (picked.some(p => p.label === BROWSE)) {
-					const uris = await vscode.window.showOpenDialog({ canSelectMany: true, openLabel: 'Add figures', filters });
-					for (const u of uris ?? []) { added.push(addAsset(id, 'figure', u.fsPath)); }
-				}
-				return added;
-			}
-		}
-		const uris = await vscode.window.showOpenDialog({ canSelectMany: true, openLabel: kind === 'figure' ? 'Add figures' : 'Add sources', filters });
+		const uris = await vscode.window.showOpenDialog({ canSelectMany: true, openLabel: kind === 'figure' ? 'Upload figure' : 'Add files', filters });
 		if (!uris || uris.length === 0) { return []; }
-		const added: PaperAsset[] = [];
-		for (const u of uris) { added.push(addAsset(id, kind, u.fsPath)); }
-		return added;
+		return uris.map(u => addAsset(id, kind, u.fsPath));
 	};
-	context.subscriptions.push(vscode.commands.registerCommand('aria.paper.addFigures', (id: string) => addAssets(id, 'figure')));
-	context.subscriptions.push(vscode.commands.registerCommand('aria.paper.addSources', (id: string) => addAssets(id, 'source')));
+	// Add a figure from the generated store (.qoka/figures) - the same figures the
+	// Manuscript tab's Figures section shows (BioRender / AI figures land there).
+	const addFiguresFromSaved = async (id: string): Promise<PaperAsset[]> => {
+		const genDir = generatedFiguresDir();
+		let gen: string[] = [];
+		try {
+			if (genDir && fs.existsSync(genDir)) {
+				gen = fs.readdirSync(genDir).filter(n => /\.(png|jpe?g|gif|svg|webp|bmp|tiff)$/i.test(n)).sort();
+			}
+		} catch { /* none */ }
+		if (gen.length === 0) {
+			void vscode.window.showInformationMessage('No generated figures yet. Ask the chat to create one; it appears in the Manuscript tab\'s Figures section.');
+			return [];
+		}
+		type Item = vscode.QuickPickItem & { fsPath: string };
+		const items: Item[] = gen.map(n => ({ label: n, fsPath: path.join(genDir!, n) }));
+		const picked = await vscode.window.showQuickPick(items, { canPickMany: true, placeHolder: 'Select figures to add from the Figures section' });
+		if (!picked || picked.length === 0) { return []; }
+		return picked.map(p => addAsset(id, 'figure', p.fsPath));
+	};
+	context.subscriptions.push(vscode.commands.registerCommand('aria.paper.addFigures', (id: string) => uploadAssets(id, 'figure')));
+	context.subscriptions.push(vscode.commands.registerCommand('aria.paper.addFiguresFromSaved', (id: string) => addFiguresFromSaved(id)));
+	context.subscriptions.push(vscode.commands.registerCommand('aria.paper.addSources', (id: string) => uploadAssets(id, 'source')));
 	context.subscriptions.push(vscode.commands.registerCommand('aria.paper.removeAsset', (id: string, assetId: string) => {
 		removeAsset(id, assetId);
 	}));
