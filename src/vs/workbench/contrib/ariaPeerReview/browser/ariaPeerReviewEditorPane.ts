@@ -5,8 +5,7 @@
 
 import { $, append, clearNode, Dimension } from '../../../../base/browser/dom.js';
 import { renderMarkdown, IRenderedMarkdown } from '../../../../base/browser/markdownRenderer.js';
-import { FileAccess } from '../../../../base/common/network.js';
-import { VSBuffer } from '../../../../base/common/buffer.js';
+import { VSBuffer, encodeBase64 } from '../../../../base/common/buffer.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -39,6 +38,20 @@ interface Proposal { original: string; replacement: string; explanation: string 
 // New shape carries `proposals` + `documentKey`; older records may be flat - normalize via proposalsOf().
 interface Revision { documentKey?: string; proposals?: Proposal[]; recordedAt: string; original?: string; replacement?: string; explanation?: string }
 interface PaperItem { id: string; title: string }
+
+/** MIME type for a data: URL, keyed off a file extension. */
+function mimeForPath(p: string): string {
+	switch (p.split('.').pop()?.toLowerCase()) {
+		case 'png': return 'image/png';
+		case 'jpg': case 'jpeg': return 'image/jpeg';
+		case 'gif': return 'image/gif';
+		case 'svg': return 'image/svg+xml';
+		case 'webp': return 'image/webp';
+		case 'bmp': return 'image/bmp';
+		case 'tif': case 'tiff': return 'image/tiff';
+		default: return 'application/octet-stream';
+	}
+}
 
 const REVIEW_FILTERS = ['md', 'markdown', 'txt', 'docx', 'pdf', 'tex', 'html', 'odt', 'rtf'];
 const FORMAT_LABEL: Record<PaperFormat, string> = { markdown: 'Markdown (.md)', docx: 'Word (.docx)', latex: 'LaTeX (.tex)' };
@@ -857,17 +870,40 @@ export class AriaPeerReviewEditorPane extends EditorPane {
 		this.lastRenderedMd = rendered;
 		Object.assign(rendered.element.style, { wordBreak: 'break-word' });
 		for (const img of Array.from(rendered.element.querySelectorAll('img'))) {
-			const src = img.getAttribute('src') ?? '';
-			try {
-				if (src.startsWith('file:')) {
-					img.src = FileAccess.uriToBrowserUri(URI.parse(src)).toString();
-				} else if (dir && src && !/^[a-z][a-z0-9+.-]*:/i.test(src) && !src.startsWith('//')) {
-					img.src = FileAccess.uriToBrowserUri(joinPath(dir, src.replace(/^\.?\//, ''))).toString();
-				}
-			} catch { /* leave as-is */ }
+			void this.resolveImageSrc(img, dir);
 			Object.assign(img.style, { maxWidth: '100%', height: 'auto' });
 		}
 		body.appendChild(rendered.element);
+	}
+
+	/** Load a rendered <img> by reading the actual file bytes and embedding them as
+	 *  a data: URL. This sidesteps every URI-scheme / CSP / browser-URI concern that
+	 *  left images as empty width x height boxes. Resolves the target relative to the
+	 *  paper draft dir, and falls back to the workspace generated-figures store
+	 *  (.qoka/figures/<basename>) so a figure referenced by any convention loads. */
+	private async resolveImageSrc(img: HTMLImageElement, dir: URI | undefined): Promise<void> {
+		const src = img.getAttribute('src') ?? '';
+		if (!src || src.startsWith('data:')) { return; }
+		const candidates: URI[] = [];
+		try {
+			if (src.startsWith('file:')) {
+				candidates.push(URI.parse(src));
+			} else if (/^[a-z][a-z0-9+.-]*:/i.test(src) || src.startsWith('//')) {
+				return; // http(s) or other absolute scheme: leave to the browser
+			} else if (dir) {
+				candidates.push(joinPath(dir, src.replace(/^\.?\//, '')));
+			}
+		} catch { /* fall through to figures fallback */ }
+		const folder = this.folderUri();
+		const base = src.split(/[\\/]/).pop() ?? '';
+		if (folder && base) { candidates.push(joinPath(folder, '.qoka', 'figures', base)); }
+		for (const uri of candidates) {
+			try {
+				const data = await this.fileService.readFile(uri);
+				img.src = `data:${mimeForPath(uri.path)};base64,${encodeBase64(data.value)}`;
+				return;
+			} catch { /* try next candidate */ }
+		}
 	}
 
 	/** Rendered / Source segmented toggle for the manuscript body (in the header). */

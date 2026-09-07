@@ -4,7 +4,8 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { $, append, clearNode, Dimension } from '../../../../base/browser/dom.js';
-import { VSBuffer } from '../../../../base/common/buffer.js';
+import { renderMarkdown, IRenderedMarkdown } from '../../../../base/browser/markdownRenderer.js';
+import { VSBuffer, encodeBase64 } from '../../../../base/common/buffer.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -59,6 +60,20 @@ const STYLES = [
 	{ v: 'bmj', l: 'BMJ' },
 	{ v: 'nejm', l: 'NEJM' },
 ];
+/** MIME type for a data: URL, keyed off a file extension. */
+function mimeForPath(p: string): string {
+	switch (p.split('.').pop()?.toLowerCase()) {
+		case 'png': return 'image/png';
+		case 'jpg': case 'jpeg': return 'image/jpeg';
+		case 'gif': return 'image/gif';
+		case 'svg': return 'image/svg+xml';
+		case 'webp': return 'image/webp';
+		case 'bmp': return 'image/bmp';
+		case 'tif': case 'tiff': return 'image/tiff';
+		default: return 'application/octet-stream';
+	}
+}
+
 const TYPES = ['research-article', 'review', 'case-report', 'preprint'];
 const STEPS = ['Format', 'Sources', 'Focus', 'Outline', 'Write'];
 
@@ -90,6 +105,9 @@ export class AriaPaperWriterEditorPane extends EditorPane {
 	private proposalPending = false;
 	private reviewAutoOpened = false;
 	private importing = false;
+	// Rendered (markdown -> HTML) vs Source (raw text) view of the finished draft.
+	private draftMode: 'rendered' | 'source' = 'rendered';
+	private lastRenderedDraft: IRenderedMarkdown | undefined;
 	private outlineDragIndex: number | undefined;
 	/** The step the AI just auto-advanced us to (via advance_paper_step / set_focus /
 	 *  set_outline). On that step we hide the "send this to your AI chat" example - the
@@ -921,11 +939,22 @@ export class AriaPaperWriterEditorPane extends EditorPane {
 			this.askLine(ask, localize('aria.paperWriter.askRevise', "Want to revise a part?"), "Revise the Introduction section: <what to change>.");
 
 			// The written draft, scrollable, right below the prompts so the user can
-			// read the result without opening the file.
+			// read the result without opening the file. A Rendered / Source toggle sits
+			// on top: Rendered = markdown -> HTML (headings, images, superscripts),
+			// Source = the raw manuscript text.
+			const draftHeader = append(root, $('div'));
+			Object.assign(draftHeader.style, { display: 'flex', justifyContent: 'flex-end', marginBottom: '6px' });
+			draftHeader.appendChild(this.draftModeToggle());
+
 			const draftBox = append(root, $('div'));
 			applyAriaScrollbar(draftBox);
-			Object.assign(draftBox.style, { border: '1px solid rgba(127,127,127,0.3)', borderRadius: '6px', padding: '12px 14px', maxHeight: '460px', overflowY: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: '13px', lineHeight: '1.6', marginBottom: '14px' });
-			draftBox.textContent = this.manuscript.trim();
+			Object.assign(draftBox.style, { border: '1px solid rgba(127,127,127,0.3)', borderRadius: '6px', padding: '12px 14px', maxHeight: '460px', overflowY: 'auto', wordBreak: 'break-word', fontSize: '13px', lineHeight: '1.6', marginBottom: '14px' });
+			if (this.draftMode === 'rendered') {
+				this.renderDraftRendered(draftBox);
+			} else {
+				draftBox.style.whiteSpace = 'pre-wrap';
+				draftBox.textContent = this.manuscript.trim();
+			}
 
 			const id = this.meta!.id;
 			const note = append(root, $('div'));
@@ -946,6 +975,72 @@ export class AriaPaperWriterEditorPane extends EditorPane {
 			bullet(
 				localize('aria.paperWriter.noteExportLabel', "Exports"),
 				localize('aria.paperWriter.noteExport', " - .qoka/manuscript/draft/{0}/export/ (named after the paper title, e.g. <title>.md / .docx / .tex). These are snapshots: they only change when you Export again, so re-export after any update.", id));
+		}
+	}
+
+	/** Rendered / Source segmented toggle for the finished draft. */
+	private draftModeToggle(): HTMLElement {
+		const seg = $('div');
+		Object.assign(seg.style, { display: 'flex', flexShrink: '0', border: '1px solid rgba(127,127,127,0.3)', borderRadius: '5px', overflow: 'hidden' });
+		const mk = (mode: 'rendered' | 'source', label: string) => {
+			const active = this.draftMode === mode;
+			const b = append(seg, $('div'));
+			b.textContent = label;
+			Object.assign(b.style, { padding: '3px 10px', fontSize: '11.5px', cursor: 'pointer', userSelect: 'none', background: active ? 'var(--vscode-button-background)' : 'transparent', color: active ? 'var(--vscode-button-foreground)' : 'inherit', opacity: active ? '1' : '0.75' });
+			b.onclick = () => { if (this.draftMode !== mode) { this.draftMode = mode; this.render(); } };
+		};
+		mk('rendered', localize('aria.paperWriter.rendered', "Rendered"));
+		mk('source', localize('aria.paperWriter.source', "Source"));
+		return seg;
+	}
+
+	/** Rendered markdown view of the draft. Mirrors the peer review pane: pandoc
+	 *  `^sup^` -> `<sup>`, and image src (file: or relative) resolved to loadable
+	 *  browser URIs AFTER render (the sanitizer keeps a relative/file: src via
+	 *  baseUri but strips a vscode-file one). */
+	private renderDraftRendered(box: HTMLElement): void {
+		const text = this.manuscript.trim();
+		if (!text) { box.textContent = localize('aria.paperWriter.noBody', "(No draft yet.)"); return; }
+		this.lastRenderedDraft?.dispose();
+		const dir = this.folder;
+		const baseUri = dir ? joinPath(dir, 'manuscript.md') : undefined;
+		const md = text.replace(/\^([^\s^]{1,32})\^/g, '<sup>$1</sup>');
+		const rendered = renderMarkdown({ value: md, isTrusted: true, supportHtml: true, baseUri }, { sanitizerConfig: { remoteImageIsAllowed: () => true } });
+		this.lastRenderedDraft = rendered;
+		Object.assign(rendered.element.style, { wordBreak: 'break-word' });
+		for (const img of Array.from(rendered.element.querySelectorAll('img'))) {
+			void this.resolveImageSrc(img, dir);
+			Object.assign(img.style, { maxWidth: '100%', height: 'auto' });
+		}
+		box.appendChild(rendered.element);
+	}
+
+	/** Load a rendered <img> by reading its file bytes into a data: URL - the same
+	 *  robust approach as the peer review pane (sidesteps URI-scheme/CSP issues that
+	 *  otherwise leave images as empty boxes). Resolves relative to the draft dir,
+	 *  then falls back to the generated-figures store (.qoka/figures/<basename>). */
+	private async resolveImageSrc(img: HTMLImageElement, dir: URI | undefined): Promise<void> {
+		const src = img.getAttribute('src') ?? '';
+		if (!src || src.startsWith('data:')) { return; }
+		const candidates: URI[] = [];
+		try {
+			if (src.startsWith('file:')) {
+				candidates.push(URI.parse(src));
+			} else if (/^[a-z][a-z0-9+.-]*:/i.test(src) || src.startsWith('//')) {
+				return; // http(s) or other scheme: leave to the browser
+			} else if (dir) {
+				candidates.push(joinPath(dir, src.replace(/^\.?\//, '')));
+			}
+		} catch { /* fall through */ }
+		const wsFolder = this.workspaceContextService.getWorkspace().folders[0]?.uri;
+		const base = src.split(/[\\/]/).pop() ?? '';
+		if (wsFolder && base) { candidates.push(joinPath(wsFolder, '.qoka', 'figures', base)); }
+		for (const uri of candidates) {
+			try {
+				const data = await this.fileService.readFile(uri);
+				img.src = `data:${mimeForPath(uri.path)};base64,${encodeBase64(data.value)}`;
+				return;
+			} catch { /* next candidate */ }
 		}
 	}
 
