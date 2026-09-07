@@ -1016,25 +1016,29 @@ export class AriaPaperWriterEditorPane extends EditorPane {
 	}
 
 	/** Load a rendered <img> by reading its file bytes into a data: URL - the same
-	 *  robust approach as the peer review pane (sidesteps URI-scheme/CSP issues that
-	 *  otherwise leave images as empty boxes). Resolves relative to the draft dir,
-	 *  then falls back to the generated-figures store (.qoka/figures/<basename>). */
+	 *  robust approach as the peer review pane. renderMarkdown rewrites a relative src
+	 *  to a vscode-file:// URI that fails silently (an empty width x height box) when
+	 *  the path does not exist, so we do NOT trust that src: we always try basename
+	 *  fallbacks in the two places figures live - the draft's figures/ dir (uploaded)
+	 *  and the generated store .qoka/figures (BioRender / AI). A data: URL always loads. */
 	private async resolveImageSrc(img: HTMLImageElement, dir: URI | undefined): Promise<void> {
-		const src = img.getAttribute('src') ?? '';
-		if (!src || src.startsWith('data:')) { return; }
+		const raw = img.getAttribute('src') ?? '';
+		if (!raw || raw.startsWith('data:')) { return; }
+		if (/^https?:/i.test(raw)) { return; } // remote: leave to the browser
 		const candidates: URI[] = [];
 		try {
-			if (src.startsWith('file:')) {
-				candidates.push(URI.parse(src));
-			} else if (/^[a-z][a-z0-9+.-]*:/i.test(src) || src.startsWith('//')) {
-				return; // http(s) or other scheme: leave to the browser
-			} else if (dir) {
-				candidates.push(joinPath(dir, src.replace(/^\.?\//, '')));
+			if (raw.startsWith('file:')) { candidates.push(URI.parse(raw)); }
+			else if (raw.startsWith('/')) { candidates.push(URI.file(raw)); }
+			else if (dir && !/^[a-z][a-z0-9+.-]*:/i.test(raw) && !raw.startsWith('//')) {
+				candidates.push(joinPath(dir, raw.replace(/^\.?\//, '')));
 			}
-		} catch { /* fall through */ }
+		} catch { /* fall through to basename fallbacks */ }
+		const base = raw.split(/[?#]/)[0].split(/[\\/]/).pop() ?? '';
 		const wsFolder = this.workspaceContextService.getWorkspace().folders[0]?.uri;
-		const base = src.split(/[\\/]/).pop() ?? '';
-		if (wsFolder && base) { candidates.push(joinPath(wsFolder, '.qoka', 'figures', base)); }
+		if (base) {
+			if (dir) { candidates.push(joinPath(dir, 'figures', base), joinPath(dir, base)); }
+			if (wsFolder) { candidates.push(joinPath(wsFolder, '.qoka', 'figures', base)); }
+		}
 		for (const uri of candidates) {
 			try {
 				const data = await this.fileService.readFile(uri);

@@ -877,26 +877,30 @@ export class AriaPeerReviewEditorPane extends EditorPane {
 	}
 
 	/** Load a rendered <img> by reading the actual file bytes and embedding them as
-	 *  a data: URL. This sidesteps every URI-scheme / CSP / browser-URI concern that
-	 *  left images as empty width x height boxes. Resolves the target relative to the
-	 *  paper draft dir, and falls back to the workspace generated-figures store
-	 *  (.qoka/figures/<basename>) so a figure referenced by any convention loads. */
+	 *  a data: URL. renderMarkdown already rewrites a relative src to a vscode-file://
+	 *  URI, which fails silently (an empty width x height box) when it points at a
+	 *  path that does not exist. So we do NOT trust that src: we read the raw path AND
+	 *  always try basename fallbacks in the two places figures actually live - the
+	 *  draft's figures/ dir (uploaded) and the generated store .qoka/figures (BioRender
+	 *  / AI). The first candidate that reads becomes a data: URL, which always loads. */
 	private async resolveImageSrc(img: HTMLImageElement, dir: URI | undefined): Promise<void> {
-		const src = img.getAttribute('src') ?? '';
-		if (!src || src.startsWith('data:')) { return; }
+		const raw = img.getAttribute('src') ?? '';
+		if (!raw || raw.startsWith('data:')) { return; }
+		if (/^https?:/i.test(raw)) { return; } // remote: leave to the browser
 		const candidates: URI[] = [];
 		try {
-			if (src.startsWith('file:')) {
-				candidates.push(URI.parse(src));
-			} else if (/^[a-z][a-z0-9+.-]*:/i.test(src) || src.startsWith('//')) {
-				return; // http(s) or other absolute scheme: leave to the browser
-			} else if (dir) {
-				candidates.push(joinPath(dir, src.replace(/^\.?\//, '')));
+			if (raw.startsWith('file:')) { candidates.push(URI.parse(raw)); }
+			else if (raw.startsWith('/')) { candidates.push(URI.file(raw)); }
+			else if (dir && !/^[a-z][a-z0-9+.-]*:/i.test(raw) && !raw.startsWith('//')) {
+				candidates.push(joinPath(dir, raw.replace(/^\.?\//, '')));
 			}
-		} catch { /* fall through to figures fallback */ }
+		} catch { /* fall through to basename fallbacks */ }
+		const base = raw.split(/[?#]/)[0].split(/[\\/]/).pop() ?? '';
 		const folder = this.folderUri();
-		const base = src.split(/[\\/]/).pop() ?? '';
-		if (folder && base) { candidates.push(joinPath(folder, '.qoka', 'figures', base)); }
+		if (base) {
+			if (dir) { candidates.push(joinPath(dir, 'figures', base), joinPath(dir, base)); }
+			if (folder) { candidates.push(joinPath(folder, '.qoka', 'figures', base)); }
+		}
 		for (const uri of candidates) {
 			try {
 				const data = await this.fileService.readFile(uri);
