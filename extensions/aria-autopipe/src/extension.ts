@@ -18,6 +18,7 @@ import { SshService } from './ssh/sshService';
 import { VMManager } from './vm/vmManager';
 import { wslAvailable, listDistrosStrict, isWslServiceError, pickDistro, installWslEngine } from './vm/wsl';
 import { QokaPdfEditorProvider } from './viewer/pdfEditor';
+import { QokaImageEditorProvider } from './viewer/imageEditor';
 import { openResultsViewer, viewFileInViewer, QokaFileViewerProvider } from './viewer/viewerPanel';
 import { HubApiClient, HubPlugin } from './hub/apiClient';
 import { GitHubAuthService } from './github/oauthService';
@@ -122,6 +123,14 @@ export function activate(context: vscode.ExtensionContext): void {
 	context.subscriptions.push(vscode.window.registerCustomEditorProvider(
 		QokaPdfEditorProvider.viewType,
 		new QokaPdfEditorProvider(),
+		{ webviewOptions: { retainContextWhenHidden: true }, supportsMultipleEditorsPerDocument: false },
+	));
+
+	// Native in-app image viewer (bundled, not a Hub plugin) - zoom/pan/rotate/fit
+	// with correct centering inside Qoka's webview host. See QokaImageEditorProvider.
+	context.subscriptions.push(vscode.window.registerCustomEditorProvider(
+		QokaImageEditorProvider.viewType,
+		new QokaImageEditorProvider(),
 		{ webviewOptions: { retainContextWhenHidden: true }, supportsMultipleEditorsPerDocument: false },
 	));
 
@@ -804,12 +813,16 @@ interface ResultViewerRow {
  * User associations for other viewTypes are preserved.
  */
 async function syncViewerAssociations(plugins: PluginService): Promise<void> {
+	// Extensions served by a bundled NATIVE Qoka viewer (qoka.pdfViewer /
+	// qoka.imageViewer) must never be routed to the plugin host, even if a matching
+	// Hub plugin is somehow installed - the native viewer stays the editor for them.
+	const NATIVE_EXTS = new Set(['pdf', 'png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'tif', 'tiff']);
 	const exts = new Set<string>();
 	for (const p of plugins.listInstalled()) {
 		if (p.manifest.plugin_type === 'pipeline') { continue; }
 		for (const e of p.manifest.extensions) {
 			const clean = String(e).toLowerCase().replace(/^\./, '').trim();
-			if (clean && clean !== 'pdf') { exts.add(clean); }
+			if (clean && !NATIVE_EXTS.has(clean)) { exts.add(clean); }
 		}
 	}
 	const cfg = vscode.workspace.getConfiguration();

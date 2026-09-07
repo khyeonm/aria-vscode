@@ -90,9 +90,9 @@ export class AriaFiguresView extends ViewPane {
 			Object.assign(thumb.style, { width: '78px', height: '78px', objectFit: 'cover', border: '1px solid var(--vscode-widget-border, rgba(127,127,127,0.3))', borderRadius: '4px', background: 'var(--vscode-editorWidget-background)' });
 			const cap = append(cell, $('div')); cap.textContent = f.name;
 			Object.assign(cap.style, { fontSize: '10px', opacity: '0.7', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' });
-			// Open in the result viewer (the image-viewer plugin), same as clicking a
-			// result file elsewhere.
-			cell.onclick = () => { void this.editorService.openEditor({ resource: f.resource, options: { pinned: true } }); };
+			// Open in Qoka's native image viewer (qoka.imageViewer) - zoom/pan/rotate/fit
+			// with correct centering, bundled in-app (not the shared Hub plugin).
+			cell.onclick = () => { void this.editorService.openEditor({ resource: f.resource, options: { pinned: true, override: 'qoka.imageViewer' } }); };
 		}
 	}
 

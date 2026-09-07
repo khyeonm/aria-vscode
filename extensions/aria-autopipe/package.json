@@ -25,6 +25,21 @@
 				"priority": "default"
 			},
 			{
+				"viewType": "qoka.imageViewer",
+				"displayName": "Qoka Image Viewer",
+				"selector": [
+					{ "filenamePattern": "*.png" },
+					{ "filenamePattern": "*.jpg" },
+					{ "filenamePattern": "*.jpeg" },
+					{ "filenamePattern": "*.gif" },
+					{ "filenamePattern": "*.bmp" },
+					{ "filenamePattern": "*.webp" },
+					{ "filenamePattern": "*.tif" },
+					{ "filenamePattern": "*.tiff" }
+				],
+				"priority": "default"
+			},
+			{
 				"viewType": "qoka.autopipe.fileViewer",
 				"displayName": "Qoka Result Viewer",
 				"selector": [
@@ -45,13 +60,7 @@
 					{ "filenamePattern": "*.gff3" },
 					{ "filenamePattern": "*.vcf" },
 					{ "filenamePattern": "*.txt" },
-					{ "filenamePattern": "*.log" },
-					{ "filenamePattern": "*.png" },
-					{ "filenamePattern": "*.jpg" },
-					{ "filenamePattern": "*.jpeg" },
-					{ "filenamePattern": "*.gif" },
-					{ "filenamePattern": "*.bmp" },
-					{ "filenamePattern": "*.webp" }
+					{ "filenamePattern": "*.log" }
 				],
 				"priority": "option"
 			}
