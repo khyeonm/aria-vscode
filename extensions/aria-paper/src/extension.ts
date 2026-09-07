@@ -15,7 +15,7 @@ import { AriaPaperMcpServer } from './mcp/server';
 import { registerWithClaudeCode } from './registration/claudeCodeMcp';
 import { registerWithCodex } from './registration/codexMcp';
 import { ExportFormat, exportPaper, getPandoc, setCacheDir, setResourceRoot } from './exporter';
-import { addAsset, addCitationCleanKey, PaperAsset, removeAsset, setAssetSummary, syncManuscriptTitle } from './papers';
+import { addAsset, addCitationCleanKey, generatedFiguresDir, PaperAsset, removeAsset, setAssetSummary, syncManuscriptTitle } from './papers';
 import { PAPER_MCP_INSTRUCTIONS } from './guide';
 
 const execFileAsync = promisify(execFile);
@@ -187,6 +187,32 @@ export function activate(context: vscode.ExtensionContext): void {
 		const filters: { [name: string]: string[] } = kind === 'figure'
 			? { Images: ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'tiff'] }
 			: { Documents: ['pdf', 'doc', 'docx', 'txt', 'md', 'csv', 'json', 'xml', 'yaml', 'yml', 'py', 'ipynb'] };
+		// Figures: offer the generated figures (.qoka/figures) FIRST as a quick pick,
+		// with a Browse fallback. This is where BioRender/AI figures land.
+		if (kind === 'figure') {
+			const genDir = generatedFiguresDir();
+			let gen: string[] = [];
+			try {
+				if (genDir && fs.existsSync(genDir)) {
+					gen = fs.readdirSync(genDir).filter(n => /\.(png|jpe?g|gif|svg|webp|bmp|tiff)$/i.test(n)).sort();
+				}
+			} catch { /* no generated figures */ }
+			if (gen.length) {
+				const BROWSE = 'Browse files…';
+				type Item = vscode.QuickPickItem & { fsPath?: string };
+				const items: Item[] = gen.map(n => ({ label: n, description: 'generated', fsPath: path.join(genDir!, n) }));
+				items.push({ label: BROWSE, description: 'pick a file from disk' });
+				const picked = await vscode.window.showQuickPick(items, { canPickMany: true, placeHolder: 'Select generated figures to add, or Browse files…' });
+				if (!picked || picked.length === 0) { return []; }
+				const added: PaperAsset[] = [];
+				for (const p of picked) { if (p.fsPath) { added.push(addAsset(id, 'figure', p.fsPath)); } }
+				if (picked.some(p => p.label === BROWSE)) {
+					const uris = await vscode.window.showOpenDialog({ canSelectMany: true, openLabel: 'Add figures', filters });
+					for (const u of uris ?? []) { added.push(addAsset(id, 'figure', u.fsPath)); }
+				}
+				return added;
+			}
+		}
 		const uris = await vscode.window.showOpenDialog({ canSelectMany: true, openLabel: kind === 'figure' ? 'Add figures' : 'Add sources', filters });
 		if (!uris || uris.length === 0) { return []; }
 		const added: PaperAsset[] = [];

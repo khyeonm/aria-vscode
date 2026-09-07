@@ -7,7 +7,7 @@ import * as vscode from 'vscode';
 import {
 	addCitations, createPaper, getAssets, getCitations, getManuscript, getMeta,
 	getProposal, hasUnsavedEdits, listPapers, OutlineSection, PaperFormat,
-	resolvePaper, setAssetSummary, setFocus, setFormat, setOutline, setProposal,
+	resolvePaper, saveGeneratedFigure, setAssetSummary, setFocus, setFormat, setOutline, setProposal,
 	setStep, setTitle, syncManuscriptTitle, writeManuscript,
 } from '../papers';
 import { ExportFormat, exportPaper } from '../exporter';
@@ -369,6 +369,29 @@ export function buildTools(): ToolDefinition[] {
 				const hit = setAssetSummary(r.id, assetId, summary);
 				if (!hit) { return err(`No asset "${assetId}" in this paper.`); }
 				return ok(`Saved summary for ${hit.name}.`);
+			},
+		},
+		{
+			name: 'save_figure',
+			description: 'Save a generated figure image into the project so it appears in the Manuscript tab\'s Figures section. `source` = an http(s) image URL (e.g. a BioRender custom-figure imageUrl), a data: URL, or a local file path. Optional `name`. Stored in the hidden .qoka/figures store - do NOT write figures into analysis/ or a top-level figures/ folder. Call this right after generating a figure so the user can see and insert it.',
+			inputSchema: {
+				type: 'object',
+				properties: {
+					source: { type: 'string', description: 'Image http(s) URL, data: URL, or local file path.' },
+					name: { type: 'string', description: 'Optional file name for the saved figure.' },
+				},
+				required: ['source'],
+				additionalProperties: false,
+			},
+			handler: async (a) => {
+				const source = asString(a.source);
+				if (!source) { return err('`source` is required (an image URL, data URL, or local path).'); }
+				try {
+					const saved = await saveGeneratedFigure(source, asString(a.name));
+					return ok(`Saved figure to ${saved}. It now appears in the Manuscript tab's Figures section.`);
+				} catch (e) {
+					return err(`Could not save figure: ${(e as Error).message}`);
+				}
 			},
 		},
 		{

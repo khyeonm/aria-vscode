@@ -4,6 +4,8 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { $, append, clearNode, Dimension } from '../../../../base/browser/dom.js';
+import { renderMarkdown, IRenderedMarkdown } from '../../../../base/browser/markdownRenderer.js';
+import { FileAccess } from '../../../../base/common/network.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
@@ -62,6 +64,10 @@ export class AriaPeerReviewEditorPane extends EditorPane {
 	private revisions: Record<string, Revision> = {};
 	private resolved = new Set<string>();
 	private paperText = '';
+	// Manuscript body view: 'rendered' = markdown (headings/images/sup) for reading;
+	// 'source' = raw text where revision edits + Accept/Decline widgets live.
+	private bodyMode: 'rendered' | 'source' = 'rendered';
+	private lastRenderedMd: IRenderedMarkdown | undefined;
 
 	// new-review form state
 	private sourceMode: 'file' | 'manuscript' = 'file';
@@ -740,6 +746,7 @@ export class AriaPeerReviewEditorPane extends EditorPane {
 		Object.assign(pt.style, { fontSize: '15px', fontWeight: '600', marginBottom: '2px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' });
 		const pm = append(lheadText, $('div')); pm.textContent = `${new Date(meta.createdAt).toLocaleString()} · ${meta.execId}`;
 		Object.assign(pm.style, { fontSize: '11px', opacity: '0.55', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' });
+		lhead.appendChild(this.bodyModeToggle());
 		lhead.appendChild(this.saveMenu());
 
 		// Document tabs (Draft · Suppl 1 · …) - mirror of the reviewer tabs on the right.
@@ -820,6 +827,58 @@ export class AriaPeerReviewEditorPane extends EditorPane {
 		}
 	}
 
+	/** The paper's asset dir (.qoka/manuscript/draft/<id>) where figures/ live, for
+	 *  resolving relative image paths in the rendered view. */
+	private paperAssetDir(): URI | undefined {
+		const f = this.folderUri();
+		return (f && this.meta?.paperId) ? joinPath(f, '.qoka', 'manuscript', 'draft', this.meta.paperId) : undefined;
+	}
+
+	/** Rewrite relative image paths to browser-loadable URIs and turn pandoc
+	 *  `^sup^` into `<sup>` so the rendered view shows figures and superscripts. */
+	private prepareMarkdown(text: string): string {
+		const dir = this.paperAssetDir();
+		let md = text;
+		if (dir) {
+			md = md.replace(/(!\[[^\]]*\]\()\s*([^)\s]+)(\s*\))/g, (whole: string, pre: string, url: string, post: string) => {
+				if (/^(https?:|data:|vscode-|file:|[a-z][a-z0-9+.-]*:\/\/)/i.test(url) || url.startsWith('/')) { return whole; }
+				try { return pre + FileAccess.uriToBrowserUri(joinPath(dir, url)).toString() + post; } catch { return whole; }
+			});
+		}
+		// pandoc-style superscript ^x^ (short, no spaces) -> <sup>; any <sup>/<sub>
+		// HTML in the source is kept as-is via supportHtml below.
+		md = md.replace(/\^([^\s^]{1,32})\^/g, '<sup>$1</sup>');
+		return md;
+	}
+
+	/** Rendered (read-only) markdown view of the manuscript body. */
+	private renderRenderedBody(body: HTMLElement): void {
+		Object.assign(body.style, { fontSize: '13px', lineHeight: '1.7', fontFamily: 'var(--vscode-font-family, system-ui, sans-serif)', padding: '16px 22px' });
+		const text = this.paperText;
+		if (!text) { body.textContent = localize('aria.peerReview.noBody', "(The paper body appears once a reviewer loads it.)"); return; }
+		this.lastRenderedMd?.dispose();
+		const rendered = renderMarkdown({ value: this.prepareMarkdown(text), isTrusted: true, supportHtml: true });
+		this.lastRenderedMd = rendered;
+		Object.assign(rendered.element.style, { wordBreak: 'break-word' });
+		body.appendChild(rendered.element);
+	}
+
+	/** Rendered / Source segmented toggle for the manuscript body (in the header). */
+	private bodyModeToggle(): HTMLElement {
+		const seg = $('div');
+		Object.assign(seg.style, { display: 'flex', flexShrink: '0', border: '1px solid rgba(127,127,127,0.3)', borderRadius: '5px', overflow: 'hidden' });
+		const mk = (mode: 'rendered' | 'source', label: string) => {
+			const active = this.bodyMode === mode;
+			const b = append(seg, $('div'));
+			b.textContent = label;
+			Object.assign(b.style, { padding: '3px 10px', fontSize: '11.5px', cursor: 'pointer', userSelect: 'none', background: active ? 'var(--vscode-button-background)' : 'transparent', color: active ? 'var(--vscode-button-foreground)' : 'inherit', opacity: active ? '1' : '0.75' });
+			b.onclick = () => { if (this.bodyMode !== mode) { this.bodyMode = mode; this.render(); } };
+		};
+		mk('rendered', localize('aria.peerReview.rendered', "Rendered"));
+		mk('source', localize('aria.peerReview.source', "Source"));
+		return seg;
+	}
+
 	/** Render the paper text, splicing in an inline revision widget (edit +
 	 *  Accept / Re-suggest) at each pending revision's location, and scroll to the
 	 *  newest one. */
@@ -827,6 +886,9 @@ export class AriaPeerReviewEditorPane extends EditorPane {
 		this.revWidgets.clear();
 		const body = append(parent, $('div'));
 		this.bodyEl = body;
+		// Rendered view: markdown -> HTML (headings, images, sup). No revision widgets
+		// here - edits happen in the Source view, so switch there when revising.
+		if (this.bodyMode === 'rendered') { this.renderRenderedBody(body); return; }
 		Object.assign(body.style, { whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: '13px', lineHeight: '1.7', fontFamily: 'var(--vscode-font-family, system-ui, sans-serif)', margin: '0', padding: '16px 22px' });
 		const text = this.paperText;
 		if (!text) { body.textContent = localize('aria.peerReview.noBody', "(The paper body appears once a reviewer loads it.)"); return; }
@@ -880,6 +942,9 @@ export class AriaPeerReviewEditorPane extends EditorPane {
 	}
 
 	private scrollToRevision(id: string): void {
+		// Revising happens in the Source view (that is where the Accept/Decline
+		// widgets are), so switch to it and rebuild before focusing the edit.
+		if (this.bodyMode !== 'source') { this.bodyMode = 'source'; this.render(); }
 		const w = this.revWidgets.get(id);
 		if (!w) { return; }
 		// Only move the viewport when the target span differs from the current focus -

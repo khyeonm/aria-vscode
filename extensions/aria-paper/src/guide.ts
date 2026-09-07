@@ -98,6 +98,10 @@ Gather the citeable references (the user adds them from the Paper Library, or yo
 add via add_citation), plus the user's FIGURES and SUPPLEMENTARY FILES (the user
 uploads these in the Sources step; they appear in get_paper.figures /
 get_paper.sources). These are the ONLY things you may cite or draw facts from.
+GENERATED FIGURES: when you create a figure (e.g. a BioRender custom-figure whose
+result is an imageUrl), ALWAYS call save_figure with that URL (or a local path)
+so it is stored in the project's .qoka/figures and appears in the Manuscript tab's
+Figures section. NEVER write figures into analysis/ or a top-level figures/ folder.
 SUMMARIZE NEW ASSETS: whenever a figure or source has an empty summary, read
 the actual file (view the image, or read the data/PDF/code file at its path -
 relative to the paper dir) and save a 3-4 sentence description with

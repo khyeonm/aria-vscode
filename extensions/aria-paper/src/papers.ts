@@ -99,6 +99,58 @@ export function papersDir(): string | undefined {
 	return folder ? path.join(folder.uri.fsPath, '.qoka', 'manuscript', 'draft') : undefined;
 }
 
+/** Hidden store for generated figures (BioRender etc.): <workspace>/.qoka/figures/.
+ *  Kept out of the analysis/ tree; surfaced only in the Manuscript tab's Figures
+ *  section. */
+export function generatedFiguresDir(): string | undefined {
+	const folder = vscode.workspace.workspaceFolders?.[0];
+	return folder ? path.join(folder.uri.fsPath, '.qoka', 'figures') : undefined;
+}
+
+function extForImageType(contentType: string): string {
+	const t = contentType.toLowerCase();
+	if (t.includes('png')) { return '.png'; }
+	if (t.includes('jpeg') || t.includes('jpg')) { return '.jpg'; }
+	if (t.includes('svg')) { return '.svg'; }
+	if (t.includes('webp')) { return '.webp'; }
+	if (t.includes('gif')) { return '.gif'; }
+	if (t.includes('bmp')) { return '.bmp'; }
+	return '';
+}
+
+/** Save a generated figure into .qoka/figures/ from an http(s) URL, a data: URL,
+ *  or a local file path. Returns the saved absolute path. De-dupes the name. */
+export async function saveGeneratedFigure(source: string, name?: string): Promise<string> {
+	const dir = generatedFiguresDir();
+	if (!dir) { throw new Error('No workspace folder is open.'); }
+	fs.mkdirSync(dir, { recursive: true });
+	let bytes: Buffer;
+	let ext = '';
+	if (/^https?:\/\//i.test(source)) {
+		const res = await fetch(source);
+		if (!res.ok) { throw new Error(`download failed: ${res.status}`); }
+		bytes = Buffer.from(await res.arrayBuffer());
+		ext = extForImageType(res.headers.get('content-type') ?? '') || path.extname(new URL(source).pathname) || '.png';
+	} else if (/^data:/i.test(source)) {
+		const m = /^data:([^;,]*)(;base64)?,(.*)$/is.exec(source);
+		if (!m) { throw new Error('invalid data URL'); }
+		bytes = m[2] ? Buffer.from(m[3], 'base64') : Buffer.from(decodeURIComponent(m[3]), 'utf8');
+		ext = extForImageType(m[1] ?? '') || '.png';
+	} else {
+		bytes = fs.readFileSync(source);
+		ext = path.extname(source) || '.png';
+	}
+	const raw = (name ?? 'figure').replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'figure';
+	const hasExt = /\.[A-Za-z0-9]+$/.test(raw);
+	const baseNoExt = hasExt ? raw.replace(/\.[^.]+$/, '') : raw;
+	const useExt = hasExt ? path.extname(raw) : ext;
+	let fname = baseNoExt + useExt;
+	for (let i = 2; fs.existsSync(path.join(dir, fname)); i++) { fname = `${baseNoExt}-${i}${useExt}`; }
+	const dest = path.join(dir, fname);
+	fs.writeFileSync(dest, bytes);
+	return dest;
+}
+
 function paperDir(id: string): string | undefined {
 	const dir = papersDir();
 	return dir ? path.join(dir, id) : undefined;
