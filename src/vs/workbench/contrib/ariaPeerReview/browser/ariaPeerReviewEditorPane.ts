@@ -834,21 +834,11 @@ export class AriaPeerReviewEditorPane extends EditorPane {
 		return (f && this.meta?.paperId) ? joinPath(f, '.qoka', 'manuscript', 'draft', this.meta.paperId) : undefined;
 	}
 
-	/** Rewrite relative image paths to browser-loadable URIs and turn pandoc
-	 *  `^sup^` into `<sup>` so the rendered view shows figures and superscripts. */
+	/** Turn pandoc `^sup^` into `<sup>` so the rendered view shows superscripts.
+	 *  Image src resolution happens AFTER render (renderRenderedBody), because the
+	 *  markdown sanitizer strips a vscode-file image URI. */
 	private prepareMarkdown(text: string): string {
-		const dir = this.paperAssetDir();
-		let md = text;
-		if (dir) {
-			md = md.replace(/(!\[[^\]]*\]\()\s*([^)\s]+)(\s*\))/g, (whole: string, pre: string, url: string, post: string) => {
-				if (/^(https?:|data:|vscode-|file:|[a-z][a-z0-9+.-]*:\/\/)/i.test(url) || url.startsWith('/')) { return whole; }
-				try { return pre + FileAccess.uriToBrowserUri(joinPath(dir, url)).toString() + post; } catch { return whole; }
-			});
-		}
-		// pandoc-style superscript ^x^ (short, no spaces) -> <sup>; any <sup>/<sub>
-		// HTML in the source is kept as-is via supportHtml below.
-		md = md.replace(/\^([^\s^]{1,32})\^/g, '<sup>$1</sup>');
-		return md;
+		return text.replace(/\^([^\s^]{1,32})\^/g, '<sup>$1</sup>');
 	}
 
 	/** Rendered (read-only) markdown view of the manuscript body. */
@@ -860,6 +850,19 @@ export class AriaPeerReviewEditorPane extends EditorPane {
 		const rendered = renderMarkdown({ value: this.prepareMarkdown(text), isTrusted: true, supportHtml: true });
 		this.lastRenderedMd = rendered;
 		Object.assign(rendered.element.style, { wordBreak: 'break-word' });
+		// Resolve relative figure images (e.g. figures/fig1.png) to loadable URIs on
+		// the LIVE element - this bypasses the markdown sanitizer, which would drop a
+		// vscode-file img src. Paths are relative to the paper's draft dir.
+		const dir = this.paperAssetDir();
+		if (dir) {
+			for (const img of Array.from(rendered.element.querySelectorAll('img'))) {
+				const src = img.getAttribute('src') ?? '';
+				if (src && !/^[a-z][a-z0-9+.-]*:/i.test(src) && !src.startsWith('//')) {
+					try { img.src = FileAccess.uriToBrowserUri(joinPath(dir, src.replace(/^\.?\//, ''))).toString(); } catch { /* leave as-is */ }
+				}
+				Object.assign(img.style, { maxWidth: '100%', height: 'auto' });
+			}
+		}
 		body.appendChild(rendered.element);
 	}
 

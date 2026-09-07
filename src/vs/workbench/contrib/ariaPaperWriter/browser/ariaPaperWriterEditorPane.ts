@@ -477,7 +477,7 @@ export class AriaPaperWriterEditorPane extends EditorPane {
 		const tools = append(root, $('div'));
 		Object.assign(tools.style, { display: 'flex', alignItems: 'center', gap: '8px', margin: '8px 0 0' });
 		tools.appendChild(this.button(
-			kind === 'figure' ? localize('aria.paperWriter.addFigures', "Add figures") : localize('aria.paperWriter.addSources', "Add files"),
+			kind === 'figure' ? localize('aria.paperWriter.addFigures', "Add figure from saved") : localize('aria.paperWriter.addSources', "Add files"),
 			'ghost', () => void this.addAssets(kind)));
 		const pending = items.filter(i => !i.summary).length;
 		if (pending > 0) {

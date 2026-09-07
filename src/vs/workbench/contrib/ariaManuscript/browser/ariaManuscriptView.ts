@@ -48,6 +48,8 @@ export class AriaManuscriptView extends ViewPane {
 	 *  runs both append their sections and the list duplicates (e.g. a second
 	 *  "Reviews" header on top). */
 	private refreshSeq = 0;
+	/** Collapsed state of the Figures section (like the Analysis tab's Changes). */
+	private figuresCollapsed = false;
 
 	constructor(
 		options: IViewPaneOptions,
@@ -156,13 +158,31 @@ export class AriaManuscriptView extends ViewPane {
 		}
 
 		// Figures: generated figures live hidden in .qoka/figures; this is where the
-		// user sees them (thumbnails). Clicking opens the image in an editor tab.
-		this.section(root, localize('aria.manuscript.figures', "Figures"));
+		// user sees them (thumbnails). Collapsible, like the Analysis tab's Changes.
+		// Clicking a thumbnail opens the image in an editor tab.
+		const figBody = $('div');
 		if (figures.length === 0) {
-			this.empty(root, localize('aria.manuscript.noFigures', "No figures yet. Ask the chat to create one."));
+			this.empty(figBody, localize('aria.manuscript.noFigures', "No figures yet. Ask the chat to create one."));
 		} else {
-			this.renderFigures(root, figures);
+			this.renderFigures(figBody, figures);
 		}
+		this.collapsibleSection(root, localize('aria.manuscript.figures', "Figures"), figBody);
+	}
+
+	/** A section whose header has a chevron that folds its body away (Figures). */
+	private collapsibleSection(root: HTMLElement, text: string, body: HTMLElement): void {
+		const h = append(root, $('div'));
+		Object.assign(h.style, { display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer', fontSize: '11px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.05em', opacity: '0.6', margin: '10px 4px 4px', userSelect: 'none' });
+		const chev = append(h, $(`span.codicon.${this.figuresCollapsed ? 'codicon-chevron-right' : 'codicon-chevron-down'}`)) as HTMLElement;
+		Object.assign(chev.style, { fontSize: '14px' });
+		const label = append(h, $('span')); label.textContent = text;
+		root.appendChild(body);
+		body.style.display = this.figuresCollapsed ? 'none' : '';
+		h.onclick = () => {
+			this.figuresCollapsed = !this.figuresCollapsed;
+			body.style.display = this.figuresCollapsed ? 'none' : '';
+			chev.className = `codicon ${this.figuresCollapsed ? 'codicon-chevron-right' : 'codicon-chevron-down'}`;
+		};
 	}
 
 	/** List the generated figures under .qoka/figures (images only, sorted). */
