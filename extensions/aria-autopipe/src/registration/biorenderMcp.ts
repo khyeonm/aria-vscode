@@ -75,10 +75,12 @@ export async function ensureBioRenderRegistered(): Promise<void> {
 }
 
 /**
- * Run the CLI's own OAuth for BioRender WITHOUT showing a terminal (Easy mode's
- * goal is that users never touch a terminal). `claude mcp login` needs a TTY (a
- * headless child fails with "stdin isn't a terminal"), so we allocate a hidden
- * pseudo-terminal with `script` and drive the flow ourselves:
+ * Run the CLI's own OAuth for BioRender. On Linux/macOS this happens WITHOUT
+ * showing a terminal (Easy mode's goal is that users never touch one); on Windows,
+ * where no headless PTY is available, it falls back to an integrated terminal (see
+ * the win32 branch below). `claude mcp login` needs a TTY (a headless child fails
+ * with "stdin isn't a terminal"), so we allocate a hidden pseudo-terminal with
+ * `script` and drive the flow ourselves:
  *
  *  - Case A (loopback): the CLI opens the browser and catches the OAuth redirect
  *    on its own localhost listener. The PTY just satisfies its TTY check; the
@@ -99,6 +101,18 @@ export async function loginBioRender(): Promise<{ ok: boolean; message: string }
 	if (!claude) { return { ok: false, message: 'Claude CLI not found on PATH or known install locations.' }; }
 	const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 	const inner = `${quoteArg(claude)} mcp login ${NAME}`;
+
+	// Windows has no `script`, and a headless child has no TTY (ConPTY is not
+	// exposed to the extension host), so the invisible-PTY trick below cannot work.
+	// Fall back to a real integrated terminal, which owns a ConPTY: the CLI gets its
+	// TTY, opens the browser, and the user signs in. The Settings section polls the
+	// status and turns green once the login completes.
+	if (process.platform === 'win32') {
+		const term = vscode.window.createTerminal({ name: 'BioRender login', cwd });
+		term.show(true);
+		term.sendText(inner);
+		return { ok: true, message: 'Complete the BioRender sign-in in the terminal that just opened (a browser opens for sign-in). This updates once connected.' };
+	}
 
 	// `script` allocates the PTY. Its flags differ by platform: util-linux uses
 	// `-qfc "<cmd>" <file>`, BSD/macOS uses `-q <file> <cmd> <args...>`.

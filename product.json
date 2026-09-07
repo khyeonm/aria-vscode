@@ -7,7 +7,13 @@
 	"quality": "stable",
 	"downloadUrl": "https://qoka.org/download",
 	"configurationDefaults": {
-		"git.ignoreMissingGitWarning": true
+		"git.ignoreMissingGitWarning": true,
+		"explorer.autoRevealExclude": {
+			"**/node_modules": true,
+			"**/bower_components": true,
+			"**/.qoka": true,
+			"**/.qoka/**": true
+		}
 	},
 	"extensionEnabledApiProposals": {
 		"openai.chatgpt": [
