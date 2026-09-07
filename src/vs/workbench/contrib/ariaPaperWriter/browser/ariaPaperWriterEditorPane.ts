@@ -882,17 +882,6 @@ export class AriaPaperWriterEditorPane extends EditorPane {
 	private renderWriteStep(root: HTMLElement): void {
 		this.header(root, localize('aria.paperWriter.writeHeader', "⑤ Write"));
 
-		if (this.proposalPending) {
-			const banner = append(root, $('div'));
-			Object.assign(banner.style, { display: 'flex', alignItems: 'center', gap: '10px', justifyContent: 'space-between', border: '1px solid rgba(240,200,0,0.5)', background: 'rgba(240,200,0,0.12)', borderRadius: '6px', padding: '8px 12px', marginBottom: '12px' });
-			const t = append(banner, $('span'));
-			t.textContent = localize('aria.paperWriter.proposalPending', "The AI proposed edits. Review them in the Source view below and accept or reject each.");
-			t.style.fontSize = '13px';
-			if (this.draftMode !== 'source') {
-				banner.appendChild(this.button(localize('aria.paperWriter.openReview', "Review edits"), 'primary', () => { this.draftMode = 'source'; this.render(); }));
-			}
-		}
-
 		const written = this.manuscript.trim().length > 0;
 		const words = written ? this.manuscript.trim().split(/\s+/).filter(Boolean).length : 0;
 
@@ -1000,64 +989,68 @@ export class AriaPaperWriterEditorPane extends EditorPane {
 		return seg;
 	}
 
-	/** Rendered markdown view of the draft. Mirrors the peer review pane: pandoc
-	 *  `^sup^` -> `<sup>`, and image src (file: or relative) resolved to loadable
-	 *  browser URIs AFTER render (the sanitizer keeps a relative/file: src via
-	 *  baseUri but strips a vscode-file one). */
+	/** Rendered markdown view of the draft. Images are inlined as data: URLs BEFORE
+	 *  rendering (async), so display never depends on how the renderer/sanitizer
+	 *  treats a relative or file src (it can strip it, leaving an empty box). */
 	private renderDraftRendered(box: HTMLElement): void {
 		const text = this.manuscript.trim();
 		if (!text) { box.textContent = localize('aria.paperWriter.noBody', "(No draft yet.)"); return; }
+		box.textContent = localize('aria.paperWriter.rendering', "Rendering...");
+		void this.renderDraftInlined(box, text.replace(/\^([^\s^]{1,32})\^/g, '<sup>$1</sup>'), this.folder);
+	}
+
+	private async renderDraftInlined(box: HTMLElement, md: string, dir: URI | undefined): Promise<void> {
+		const value = await this.inlineImages(md, dir);
 		this.lastRenderedDraft?.dispose();
-		const dir = this.folder;
-		const baseUri = dir ? joinPath(dir, 'manuscript.md') : undefined;
-		const md = text.replace(/\^([^\s^]{1,32})\^/g, '<sup>$1</sup>');
-		const rendered = renderMarkdown({ value: md, isTrusted: true, supportHtml: true, baseUri }, { sanitizerConfig: { remoteImageIsAllowed: () => true } });
+		const rendered = renderMarkdown({ value, isTrusted: true, supportHtml: true }, { sanitizerConfig: { remoteImageIsAllowed: () => true } });
 		this.lastRenderedDraft = rendered;
 		Object.assign(rendered.element.style, { wordBreak: 'break-word' });
-		for (const img of Array.from(rendered.element.querySelectorAll('img'))) {
-			void this.resolveImageSrc(img, dir);
-			Object.assign(img.style, { maxWidth: '100%', height: 'auto' });
-		}
+		for (const img of Array.from(rendered.element.querySelectorAll('img'))) { Object.assign(img.style, { maxWidth: '100%', height: 'auto' }); }
+		clearNode(box);
 		box.appendChild(rendered.element);
 	}
 
-	/** Load a rendered <img> by reading its file bytes into a data: URL - the same
-	 *  robust approach as the peer review pane. renderMarkdown rewrites a relative src
-	 *  to a vscode-file:// URI that fails silently (an empty width x height box) when
-	 *  the path does not exist, so we do NOT trust that src: we always try basename
-	 *  fallbacks in the two places figures live - the draft's figures/ dir (uploaded)
-	 *  and the generated store .qoka/figures (BioRender / AI). A data: URL always loads. */
-	private async resolveImageSrc(img: HTMLImageElement, dir: URI | undefined): Promise<void> {
-		const raw = img.getAttribute('src') ?? '';
-		if (!raw || raw.startsWith('data:')) { return; }
-		if (/^https?:/i.test(raw)) { return; } // remote: leave to the browser
+	/** Replace each local image reference (markdown ![alt](path) or <img src>) with a
+	 *  data: URL read from disk. A path readable nowhere becomes a visible
+	 *  "[figure not found: <path>]" marker. Figures live in the draft's figures/ dir
+	 *  (uploaded) or the generated store .qoka/figures (BioRender / AI). */
+	private async inlineImages(text: string, dir: URI | undefined): Promise<string> {
+		const re = /(!\[[^\]]*\]\(\s*<?)([^)>\s"']+)((?:>?\s*(?:"[^"]*")?\s*)\))|(<img\b[^>]*?\bsrc\s*=\s*["'])([^"']+)(["'])/gi;
+		const paths = new Set<string>();
+		for (let m = re.exec(text); m; m = re.exec(text)) { const p = m[2] ?? m[5]; if (p) { paths.add(p); } }
+		if (paths.size === 0) { return text; }
+		const map = new Map<string, string | null>();
+		await Promise.all([...paths].map(async p => { map.set(p, await this.readImageData(p, dir)); }));
+		re.lastIndex = 0;
+		return text.replace(re, (whole, mdOpen, mdPath, mdClose, htmlOpen, htmlPath, htmlClose) => {
+			const p = mdPath ?? htmlPath;
+			if (p && /^(https?|data):/i.test(p)) { return whole; }
+			const data = p ? map.get(p) : null;
+			if (data) { return mdPath !== undefined ? `${mdOpen}${data}${mdClose}` : `${htmlOpen}${data}${htmlClose}`; }
+			return `\n\n\`[figure not found: ${p}]\`\n\n`;
+		});
+	}
+
+	/** Read one image path into a data: URL, trying the draft dir, its figures/ dir,
+	 *  and the workspace .qoka/figures store (by basename). */
+	private async readImageData(src: string, dir: URI | undefined): Promise<string | null> {
+		if (/^(https?|data):/i.test(src)) { return null; }
 		const candidates: URI[] = [];
 		try {
-			if (raw.startsWith('file:')) { candidates.push(URI.parse(raw)); }
-			else if (raw.startsWith('/')) { candidates.push(URI.file(raw)); }
-			else if (dir && !/^[a-z][a-z0-9+.-]*:/i.test(raw) && !raw.startsWith('//')) {
-				candidates.push(joinPath(dir, raw.replace(/^\.?\//, '')));
-			}
-		} catch { /* fall through to basename fallbacks */ }
-		const base = raw.split(/[?#]/)[0].split(/[\\/]/).pop() ?? '';
+			if (src.startsWith('file:')) { candidates.push(URI.parse(src)); }
+			else if (src.startsWith('/')) { candidates.push(URI.file(src)); }
+			else if (dir && !/^[a-z][a-z0-9+.-]*:/i.test(src) && !src.startsWith('//')) { candidates.push(joinPath(dir, src.replace(/^\.?\//, ''))); }
+		} catch { /* fall through */ }
+		const base = src.split(/[?#]/)[0].split(/[\\/]/).pop() ?? '';
 		const wsFolder = this.workspaceContextService.getWorkspace().folders[0]?.uri;
 		if (base) {
 			if (dir) { candidates.push(joinPath(dir, 'figures', base), joinPath(dir, base)); }
 			if (wsFolder) { candidates.push(joinPath(wsFolder, '.qoka', 'figures', base)); }
 		}
 		for (const uri of candidates) {
-			try {
-				const data = await this.fileService.readFile(uri);
-				img.src = `data:${mimeForPath(uri.path)};base64,${encodeBase64(data.value)}`;
-				return;
-			} catch { /* next candidate */ }
+			try { const data = await this.fileService.readFile(uri); return `data:${mimeForPath(uri.path)};base64,${encodeBase64(data.value)}`; } catch { /* next */ }
 		}
-		// Nothing loaded: name the path we looked for so a missing/misnamed figure is
-		// visible (and diagnosable) instead of a silent empty box.
-		const note = document.createElement('span');
-		note.textContent = localize('aria.paperWriter.figureMissing', "[figure not found: {0}]", raw);
-		Object.assign(note.style, { color: 'var(--vscode-errorForeground)', fontSize: '11px', opacity: '0.8' });
-		img.replaceWith(note);
+		return null;
 	}
 
 	// --- Inline revision review (manuscript.proposed.md) --------------------

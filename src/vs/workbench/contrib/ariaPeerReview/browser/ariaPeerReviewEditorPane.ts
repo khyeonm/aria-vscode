@@ -859,62 +859,67 @@ export class AriaPeerReviewEditorPane extends EditorPane {
 		Object.assign(body.style, { fontSize: '13px', lineHeight: '1.7', fontFamily: 'var(--vscode-font-family, system-ui, sans-serif)', padding: '16px 22px' });
 		const text = this.paperText;
 		if (!text) { body.textContent = localize('aria.peerReview.noBody', "(The paper body appears once a reviewer loads it.)"); return; }
+		// Images are inlined as data: URLs BEFORE rendering (async), so display never
+		// depends on how the markdown renderer/sanitizer treats a relative or file src
+		// (it can strip it, leaving an empty width x height box). Render once the text
+		// is ready; a "checking" note keeps the pane from flashing empty.
+		body.textContent = localize('aria.peerReview.rendering', "Rendering...");
+		void this.renderInlined(body, text, this.paperAssetDir());
+	}
+
+	private async renderInlined(body: HTMLElement, text: string, dir: URI | undefined): Promise<void> {
+		const value = await this.inlineImages(this.prepareMarkdown(text), dir);
 		this.lastRenderedMd?.dispose();
-		const dir = this.paperAssetDir();
-		// baseUri = a file in the paper draft dir, so relative image paths
-		// (figures/fig1.png) resolve to a `file:` URI - which the markdown sanitizer
-		// KEEPS (a vscode-file src would be stripped). We convert those to loadable
-		// browser URIs on the LIVE element below.
-		const baseUri = dir ? joinPath(dir, 'manuscript.md') : undefined;
-		const rendered = renderMarkdown({ value: this.prepareMarkdown(text), isTrusted: true, supportHtml: true, baseUri }, { sanitizerConfig: { remoteImageIsAllowed: () => true } });
+		const rendered = renderMarkdown({ value, isTrusted: true, supportHtml: true }, { sanitizerConfig: { remoteImageIsAllowed: () => true } });
 		this.lastRenderedMd = rendered;
 		Object.assign(rendered.element.style, { wordBreak: 'break-word' });
-		for (const img of Array.from(rendered.element.querySelectorAll('img'))) {
-			void this.resolveImageSrc(img, dir);
-			Object.assign(img.style, { maxWidth: '100%', height: 'auto' });
-		}
+		for (const img of Array.from(rendered.element.querySelectorAll('img'))) { Object.assign(img.style, { maxWidth: '100%', height: 'auto' }); }
+		clearNode(body);
 		body.appendChild(rendered.element);
 	}
 
-	/** Load a rendered <img> by reading the actual file bytes and embedding them as
-	 *  a data: URL. renderMarkdown already rewrites a relative src to a vscode-file://
-	 *  URI, which fails silently (an empty width x height box) when it points at a
-	 *  path that does not exist. So we do NOT trust that src: we read the raw path AND
-	 *  always try basename fallbacks in the two places figures actually live - the
-	 *  draft's figures/ dir (uploaded) and the generated store .qoka/figures (BioRender
-	 *  / AI). The first candidate that reads becomes a data: URL, which always loads. */
-	private async resolveImageSrc(img: HTMLImageElement, dir: URI | undefined): Promise<void> {
-		const raw = img.getAttribute('src') ?? '';
-		if (!raw || raw.startsWith('data:')) { return; }
-		if (/^https?:/i.test(raw)) { return; } // remote: leave to the browser
+	/** Replace each local image reference (markdown ![alt](path) or <img src>) with a
+	 *  data: URL read from disk, so the rendered image always displays. A path that
+	 *  cannot be read anywhere becomes a visible "[figure not found: <path>]" marker,
+	 *  which surfaces the exact reference for diagnosis. Figures live in the draft's
+	 *  figures/ dir (uploaded) or the generated store .qoka/figures (BioRender / AI). */
+	private async inlineImages(text: string, dir: URI | undefined): Promise<string> {
+		const re = /(!\[[^\]]*\]\(\s*<?)([^)>\s"']+)((?:>?\s*(?:"[^"]*")?\s*)\))|(<img\b[^>]*?\bsrc\s*=\s*["'])([^"']+)(["'])/gi;
+		const paths = new Set<string>();
+		for (let m = re.exec(text); m; m = re.exec(text)) { const p = m[2] ?? m[5]; if (p) { paths.add(p); } }
+		if (paths.size === 0) { return text; }
+		const map = new Map<string, string | null>();
+		await Promise.all([...paths].map(async p => { map.set(p, await this.readImageData(p, dir)); }));
+		re.lastIndex = 0;
+		return text.replace(re, (whole, mdOpen, mdPath, mdClose, htmlOpen, htmlPath, htmlClose) => {
+			const p = mdPath ?? htmlPath;
+			if (p && /^(https?|data):/i.test(p)) { return whole; }
+			const data = p ? map.get(p) : null;
+			if (data) { return mdPath !== undefined ? `${mdOpen}${data}${mdClose}` : `${htmlOpen}${data}${htmlClose}`; }
+			return `\n\n\`[figure not found: ${p}]\`\n\n`;
+		});
+	}
+
+	/** Read one image path into a data: URL, trying the draft dir, the draft's
+	 *  figures/ dir, and the workspace .qoka/figures store (by basename). */
+	private async readImageData(src: string, dir: URI | undefined): Promise<string | null> {
+		if (/^(https?|data):/i.test(src)) { return null; }
 		const candidates: URI[] = [];
 		try {
-			if (raw.startsWith('file:')) { candidates.push(URI.parse(raw)); }
-			else if (raw.startsWith('/')) { candidates.push(URI.file(raw)); }
-			else if (dir && !/^[a-z][a-z0-9+.-]*:/i.test(raw) && !raw.startsWith('//')) {
-				candidates.push(joinPath(dir, raw.replace(/^\.?\//, '')));
-			}
-		} catch { /* fall through to basename fallbacks */ }
-		const base = raw.split(/[?#]/)[0].split(/[\\/]/).pop() ?? '';
+			if (src.startsWith('file:')) { candidates.push(URI.parse(src)); }
+			else if (src.startsWith('/')) { candidates.push(URI.file(src)); }
+			else if (dir && !/^[a-z][a-z0-9+.-]*:/i.test(src) && !src.startsWith('//')) { candidates.push(joinPath(dir, src.replace(/^\.?\//, ''))); }
+		} catch { /* fall through */ }
+		const base = src.split(/[?#]/)[0].split(/[\\/]/).pop() ?? '';
 		const folder = this.folderUri();
 		if (base) {
 			if (dir) { candidates.push(joinPath(dir, 'figures', base), joinPath(dir, base)); }
 			if (folder) { candidates.push(joinPath(folder, '.qoka', 'figures', base)); }
 		}
 		for (const uri of candidates) {
-			try {
-				const data = await this.fileService.readFile(uri);
-				img.src = `data:${mimeForPath(uri.path)};base64,${encodeBase64(data.value)}`;
-				return;
-			} catch { /* try next candidate */ }
+			try { const data = await this.fileService.readFile(uri); return `data:${mimeForPath(uri.path)};base64,${encodeBase64(data.value)}`; } catch { /* next */ }
 		}
-		// Nothing loaded: replace the broken box with a note naming the path we looked
-		// for, so a missing/misnamed figure is visible (and diagnosable) instead of
-		// silently rendering as an empty width x height box.
-		const note = document.createElement('span');
-		note.textContent = localize('aria.peerReview.figureMissing', "[figure not found: {0}]", raw);
-		Object.assign(note.style, { color: 'var(--vscode-errorForeground)', fontSize: '11px', opacity: '0.8' });
-		img.replaceWith(note);
+		return null;
 	}
 
 	/** Rendered / Source segmented toggle for the manuscript body (in the header). */
