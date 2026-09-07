@@ -18,6 +18,7 @@ import { IWorkspaceContextService, WorkbenchState, isSingleFolderWorkspaceIdenti
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
+import { IPathService } from '../../../services/path/common/pathService.js';
 import { IHostService } from '../../../services/host/browser/host.js';
 import { IEditorService } from '../../../services/editor/common/editorService.js';
 import { IAuthenticationService, AuthenticationSession } from '../../../services/authentication/common/authentication.js';
@@ -259,6 +260,7 @@ class AriaStartedOverlayContribution extends Disposable implements IWorkbenchCon
 		@INotificationService private readonly notificationService: INotificationService,
 		@IFileDialogService private readonly fileDialogService: IFileDialogService,
 		@IFileService private readonly fileService: IFileService,
+		@IPathService private readonly pathService: IPathService,
 		@IHostService private readonly hostService: IHostService,
 		@IEditorService private readonly editorService: IEditorService,
 		@IAuthenticationService private readonly authService: IAuthenticationService,
@@ -1741,6 +1743,19 @@ class AriaStartedOverlayContribution extends Disposable implements IWorkbenchCon
 		await this.openExistingProject(folderUri);
 	}
 
+	/** Where the New Project dialog should start: the user's Documents folder when
+	 *  it exists, else their home directory. Never creates anything - it only picks a
+	 *  neutral starting location so a new project is not nested in the open one. */
+	private async newProjectDefaultDir(): Promise<URI> {
+		const home = this.pathService.userHome({ preferLocal: true });
+		const docs = URI.joinPath(home, 'Documents');
+		try {
+			const stat = await this.fileService.resolve(docs);
+			if (stat.isDirectory) { return docs; }
+		} catch { /* no Documents folder (e.g. minimal Linux) - fall back to home */ }
+		return home;
+	}
+
 	/**
 	 * New Project: let the user choose a location + folder name (one save
 	 * dialog), create that folder with an empty `.aria/roadmap.json`, then open
@@ -1759,6 +1774,11 @@ class AriaStartedOverlayContribution extends Disposable implements IWorkbenchCon
 			canSelectMany: false,
 			title: 'New project - choose or create a folder',
 			openLabel: 'Create project',
+			// Start in the user's Documents folder (fallback: home) instead of the last
+			// location, which was usually the currently open project - users then made a
+			// project INSIDE another project. Nothing is created here: if Documents does
+			// not exist (e.g. a minimal Linux install), we simply start at home.
+			defaultUri: await this.newProjectDefaultDir(),
 		});
 		if (!result || result.length === 0) {
 			// User cancelled - keep the overlay up.
