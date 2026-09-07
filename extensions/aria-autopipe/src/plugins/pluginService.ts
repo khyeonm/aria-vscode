@@ -81,7 +81,15 @@ export const DEFAULT_PLUGIN_NAMES = [
  *  editor regardless of any Hub plugin, and installing / removing the matching
  *  Hub plugin does nothing. PDF -> qoka.pdfViewer. Kept out of the default set
  *  and the Result Viewers list so the UI never offers a no-op install/remove. */
-export const NATIVE_VIEWER_NAMES = new Set<string>(['pdf-viewer']);
+export const NATIVE_VIEWER_NAMES = new Set<string>(['pdf-viewer', 'image-viewer']);
+
+/** Display info + served extensions for each bundled native viewer, so the Result
+ *  Viewers panel can list them (and toggle them on/off) even though they are not
+ *  Hub plugins. `custom` maps to the Qoka custom-editor viewType. */
+export const NATIVE_VIEWER_INFO: Record<string, { description: string; extensions: string[]; custom: string }> = {
+	'pdf-viewer': { description: 'Built-in PDF viewer (Qoka)', extensions: ['pdf'], custom: 'qoka.pdfViewer' },
+	'image-viewer': { description: 'Built-in image viewer (Qoka)', extensions: ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'tif', 'tiff'], custom: 'qoka.imageViewer' },
+};
 
 /** Hub tag (in user_plugins.tags) that marks a viewer as a Qoka default.
  *  Adding / removing this tag on the Hub changes the default set WITHOUT an app
@@ -211,6 +219,30 @@ export class PluginService {
 		const s = this.getRemovedDefaults();
 		s.delete(name);
 		this.writeRemoved(s);
+	}
+
+	// --- Native viewers (qoka.pdfViewer / qoka.imageViewer) enable/disable ------
+	// Bundled native viewers can be "removed" (disabled) from the Result Viewers
+	// panel just like a plugin. Disabling is a persisted flag; the routing then
+	// points those file types at VS Code's default editor instead of the native one.
+
+	private nativeDisabledPath(): string {
+		return path.join(path.dirname(this.userPluginsDir), 'autopipe-native-disabled.json');
+	}
+
+	getDisabledNativeViewers(): Set<string> {
+		try {
+			const raw = JSON.parse(fs.readFileSync(this.nativeDisabledPath(), 'utf8'));
+			return new Set(Array.isArray(raw) ? raw.map((n: unknown) => String(n)) : []);
+		} catch {
+			return new Set();
+		}
+	}
+
+	setNativeViewerEnabled(name: string, enabled: boolean): void {
+		const s = this.getDisabledNativeViewers();
+		if (enabled) { s.delete(name); } else { s.add(name); }
+		try { fs.writeFileSync(this.nativeDisabledPath(), JSON.stringify([...s]), 'utf8'); } catch { /* best effort */ }
 	}
 
 	/**

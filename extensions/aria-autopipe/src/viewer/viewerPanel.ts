@@ -319,9 +319,28 @@ function renderPipelineDashboard(panel: vscode.WebviewPanel, folder: string, plu
 	});
 }
 
+const NATIVE_IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.tif', '.tiff', '.svg']);
+
 async function renderFileInPanel(panel: vscode.WebviewPanel, filePath: string): Promise<void> {
 	const { plugins } = services();
 	const ext = path.extname(filePath);
+	// Images render NATIVELY in the scope viewer (like PDF), not via the Hub plugin:
+	// same centered zoom/pan/rotate/fit as the standalone qoka.imageViewer. Result
+	// files are copied locally, so a direct read works.
+	if (NATIVE_IMAGE_EXTS.has(ext.toLowerCase())) {
+		try {
+			const buffer = fs.readFileSync(filePath);
+			panel.webview.postMessage({
+				type: 'aria.viewer.imageNative',
+				filePath,
+				filename: path.basename(filePath),
+				dataUrl: `data:${guessMimeType(filePath)};base64,${buffer.toString('base64')}`,
+			});
+		} catch (err) {
+			panel.webview.postMessage({ type: 'aria.viewer.fileError', filePath, error: (err as Error).message });
+		}
+		return;
+	}
 	const plugin = ext ? plugins.findForExtension(ext) : null;
 	if (!plugin) {
 		panel.webview.postMessage({
@@ -724,6 +743,15 @@ function renderShellHtml(webview: vscode.Webview): string {
 		.header .meta { opacity: 0.7; font-size: 11px; }
 		.viewer-host { flex: 1; overflow: auto; position: relative; }
 		.placeholder { padding: 32px; text-align: center; opacity: 0.6; font-size: 12px; }
+		/* Native image viewer inside the scope host: a flex-centered stage + a bottom
+		   control bar, so images center correctly (the shared plugin got this wrong). */
+		#img-stage { position: absolute; top: 0; left: 0; right: 0; bottom: 34px; overflow: hidden; display: flex; align-items: center; justify-content: center; cursor: grab;
+			background-image: linear-gradient(45deg,rgba(127,127,127,.1) 25%,transparent 25%),linear-gradient(-45deg,rgba(127,127,127,.1) 25%,transparent 25%),linear-gradient(45deg,transparent 75%,rgba(127,127,127,.1) 75%),linear-gradient(-45deg,transparent 75%,rgba(127,127,127,.1) 75%);
+			background-size: 20px 20px; background-position: 0 0,0 10px,10px -10px,-10px 0; }
+		#img-el { position: static; max-width: none; user-select: none; -webkit-user-drag: none; transform-origin: center center; }
+		#img-bar { position: absolute; left: 0; right: 0; bottom: 0; height: 34px; box-sizing: border-box; display: flex; gap: 6px; align-items: center; padding: 0 10px; background: var(--vscode-editorWidget-background); border-top: 1px solid var(--vscode-widget-border, transparent); }
+		#img-bar button { cursor: pointer; background: var(--vscode-button-secondaryBackground,rgba(127,127,127,.2)); color: var(--vscode-button-secondaryForeground,var(--vscode-foreground)); border: none; border-radius: 3px; padding: 3px 9px; font-size: 12px; }
+		#img-z { opacity: .7; font-size: 11px; min-width: 42px; text-align: center; }
 		.err { padding: 12px; background: var(--vscode-inputValidation-errorBackground, #fee); color: var(--vscode-inputValidation-errorForeground, #c44); border: 1px solid var(--vscode-inputValidation-errorBorder, #c44); border-radius: 3px; margin: 12px; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
 		.notice { padding: 16px; margin: 12px; color: var(--vscode-foreground); font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
 	</style>
@@ -930,6 +958,43 @@ function renderShellHtml(webview: vscode.Webview): string {
 			}
 		}
 
+		// Native image viewer (no plugin): centered zoom/pan/rotate/fit, matching the
+		// standalone qoka.imageViewer. The stage fills the host and centers the image
+		// with flexbox; the transform only zooms/pans/rotates so it never lands
+		// off-screen and Fit truly re-centers.
+		function renderNativeImage(payload) {
+			tearDownCurrentPlugin();
+			$('right-header').innerHTML = '<span class="name">' + escapeHtml(payload.filename) + '</span>';
+			const host = $('viewer-host');
+			host.innerHTML =
+				'<div id="img-stage"><img id="img-el" alt=""></div>' +
+				'<div id="img-bar"><button data-a="out">-</button><span id="img-z">100%</span><button data-a="in">+</button>' +
+				'<button data-a="fit">Fit</button><button data-a="actual">1:1</button><button data-a="rot">Rotate</button><button data-a="reset">Reset</button></div>';
+			const stage = $('img-stage'), img = $('img-el'), zEl = $('img-z');
+			let zoom = 1, rot = 0, panX = 0, panY = 0, iw = 0, ih = 0;
+			function apply() { img.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + zoom + ') rotate(' + rot + 'deg)'; zEl.textContent = Math.round(zoom * 100) + '%'; }
+			function fit() {
+				const cw = stage.clientWidth, ch = stage.clientHeight;
+				if (!iw || !ih || !cw || !ch) return;
+				const r = (rot % 180) !== 0, w = r ? ih : iw, h = r ? iw : ih;
+				zoom = Math.min(cw / w, ch / h, 1); panX = 0; panY = 0; apply();
+			}
+			function setZoom(n) { zoom = Math.min(10, Math.max(0.05, Math.round(n * 100) / 100)); apply(); }
+			host.querySelector('#img-bar').addEventListener('click', (e) => {
+				const a = e.target && e.target.getAttribute && e.target.getAttribute('data-a');
+				if (a === 'in') setZoom(zoom * 1.25); else if (a === 'out') setZoom(zoom / 1.25);
+				else if (a === 'fit') fit(); else if (a === 'actual') { zoom = 1; panX = 0; panY = 0; apply(); }
+				else if (a === 'rot') { rot = (rot + 90) % 360; fit(); } else if (a === 'reset') { zoom = 1; rot = 0; panX = 0; panY = 0; apply(); }
+			});
+			stage.addEventListener('wheel', (e) => { e.preventDefault(); setZoom(zoom * (e.deltaY < 0 ? 1.1 : 0.9)); }, { passive: false });
+			let dragging = false, sx = 0, sy = 0;
+			stage.addEventListener('mousedown', (e) => { dragging = true; sx = e.clientX - panX; sy = e.clientY - panY; stage.style.cursor = 'grabbing'; e.preventDefault(); });
+			window.addEventListener('mousemove', (e) => { if (!dragging) return; panX = e.clientX - sx; panY = e.clientY - sy; apply(); });
+			window.addEventListener('mouseup', () => { dragging = false; stage.style.cursor = 'grab'; });
+			img.onload = () => { iw = img.naturalWidth; ih = img.naturalHeight; fit(); };
+			img.src = payload.dataUrl;
+		}
+
 		// A pipeline-type plugin renders the WHOLE result folder as one
 		// dashboard. It pulls each file through /data/{filename} using its own
 		// data_source (pre-registered on the extension side). We call
@@ -978,6 +1043,8 @@ function renderShellHtml(webview: vscode.Webview): string {
 			}
 			if (msg.type === 'aria.viewer.fileLoaded') {
 				mountPlugin(msg);
+			} else if (msg.type === 'aria.viewer.imageNative') {
+				renderNativeImage(msg);
 			} else if (msg.type === 'aria.viewer.pipelineLoaded') {
 				mountPipeline(msg);
 			} else if (msg.type === 'aria.viewer.fileError') {

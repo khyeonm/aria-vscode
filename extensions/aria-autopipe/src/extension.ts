@@ -25,7 +25,7 @@ import { GitHubAuthService } from './github/oauthService';
 import { setServices } from './common/services';
 import { runScriptInEnv, readRunEnvFile } from './mcp/tools/run';
 import { registerSetupCommands } from './commands/setupCommands';
-import { PluginService, DEFAULT_PLUGIN_NAMES, resolveDefaultNames, NATIVE_VIEWER_NAMES } from './plugins/pluginService';
+import { PluginService, DEFAULT_PLUGIN_NAMES, resolveDefaultNames, NATIVE_VIEWER_NAMES, NATIVE_VIEWER_INFO } from './plugins/pluginService';
 import { openHubPanel } from './panels/hubPanel';
 import { openPluginsPanel } from './panels/pluginsPanel';
 import { ensureBioRenderRegistered, loginBioRender, logoutBioRender, bioRenderStatus } from './registration/biorenderMcp';
@@ -367,6 +367,8 @@ export function activate(context: vscode.ExtensionContext): void {
 	// bind each installed viewer's file extensions to the Qoka Result Viewer.
 	void bootstrapDefaultPlugins(services.plugins, services.hub)
 		.finally(() => { void syncViewerAssociations(services.plugins); });
+	// Apply any disabled native viewers (PDF/Image) at startup.
+	void syncNativeViewerAssociations(services.plugins);
 
 	// Result Viewer management (the Settings "Result Viewer" section calls these):
 	// list installed + Hub viewers, install / remove one, and re-sync associations.
@@ -374,6 +376,11 @@ export function activate(context: vscode.ExtensionContext): void {
 		return listResultViewers(services.plugins, services.hub);
 	}));
 	context.subscriptions.push(vscode.commands.registerCommand('aria.resultViewer.install', async (name: string) => {
+		if (NATIVE_VIEWER_NAMES.has(name)) { // re-enable a bundled native viewer
+			services.plugins.setNativeViewerEnabled(name, true);
+			await syncNativeViewerAssociations(services.plugins);
+			return;
+		}
 		const hp = await services.hub.getPluginByName(name);
 		if (!hp) { throw new Error(`Viewer "${name}" was not found on the Hub.`); }
 		await services.plugins.install(hp);
@@ -381,6 +388,11 @@ export function activate(context: vscode.ExtensionContext): void {
 		await syncViewerAssociations(services.plugins);
 	}));
 	context.subscriptions.push(vscode.commands.registerCommand('aria.resultViewer.remove', async (name: string) => {
+		if (NATIVE_VIEWER_NAMES.has(name)) { // disable a bundled native viewer (falls back to VS Code default)
+			services.plugins.setNativeViewerEnabled(name, false);
+			await syncNativeViewerAssociations(services.plugins);
+			return;
+		}
 		services.plugins.uninstall(name);
 		services.plugins.markRemoved(name);
 		await syncViewerAssociations(services.plugins);
@@ -802,6 +814,9 @@ interface ResultViewerRow {
 	isPipeline: boolean;
 	installed: boolean;
 	removed: boolean;
+	/** A bundled native viewer (qoka.pdfViewer / qoka.imageViewer), toggled via
+	 *  setNativeViewerEnabled rather than a Hub download. */
+	isNative?: boolean;
 }
 
 /**
@@ -871,7 +886,40 @@ async function listResultViewers(plugins: PluginService, hub: HubApiClient): Pro
 			});
 		}
 	}
+	// Bundled native viewers (PDF, Image): listed so they can be removed (disabled)
+	// and re-installed (enabled) like plugins. "installed" = enabled.
+	const disabledNative = plugins.getDisabledNativeViewers();
+	for (const [name, info] of Object.entries(NATIVE_VIEWER_INFO)) {
+		const enabled = !disabledNative.has(name);
+		byName.set(name, {
+			name, description: info.description, extensions: info.extensions, author: 'Qoka',
+			hubVersion: null, installedVersion: null,
+			isDefault: true, isPipeline: false, installed: enabled, removed: !enabled, isNative: true,
+		});
+	}
 	return [...byName.values()].sort((a, b) => (Number(b.isDefault) - Number(a.isDefault)) || a.name.localeCompare(b.name));
+}
+
+/** Point every disabled native viewer's extensions at VS Code's default editor
+ *  (so e.g. images open in the built-in preview), and drop that override for
+ *  enabled ones so the native custom editor (priority "default") wins again. */
+async function syncNativeViewerAssociations(plugins: PluginService): Promise<void> {
+	const disabled = plugins.getDisabledNativeViewers();
+	const cfg = vscode.workspace.getConfiguration();
+	const current = { ...(cfg.get<Record<string, string>>('workbench.editorAssociations') ?? {}) };
+	for (const [name, info] of Object.entries(NATIVE_VIEWER_INFO)) {
+		for (const ext of info.extensions) {
+			const key = `*.${ext}`;
+			if (disabled.has(name)) {
+				current[key] = 'default'; // open in VS Code's built-in editor
+			} else if (name === 'image-viewer') {
+				current[key] = info.custom; // route images deterministically to the native viewer
+			} else if (current[key] === info.custom || current[key] === 'default') {
+				delete current[key]; // PDF: rely on its priority "default" registration
+			}
+		}
+	}
+	try { await cfg.update('workbench.editorAssociations', current, vscode.ConfigurationTarget.Global); } catch { /* read-only store */ }
 }
 
 /**

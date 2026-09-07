@@ -125,7 +125,7 @@ function renderHtml(webview: vscode.Webview): string {
 </head>
 <body>
 	<h1>Result Viewers</h1>
-	<div class="subtitle">Viewers that open result files by type. Default viewers install automatically; remove any you do not want (its files then open in VS Code or an installed extension). Install more from the Hub, including ones shared by other users. PDF files always open in the built-in Qoka PDF viewer.</div>
+	<div class="subtitle">Viewers that open result files by type. Default viewers install automatically; remove any you do not want (its files then open in VS Code or an installed extension). Install more from the Hub, including ones shared by other users. PDF and images use Qoka's built-in viewers by default; remove them here to open those files in VS Code instead.</div>
 	<div class="toolbar">
 		<input id="q" placeholder="Search by name, description, or extension…" />
 		<button class="btn secondary" id="refresh">Refresh</button>
