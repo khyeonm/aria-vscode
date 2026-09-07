@@ -908,6 +908,13 @@ export class AriaPeerReviewEditorPane extends EditorPane {
 				return;
 			} catch { /* try next candidate */ }
 		}
+		// Nothing loaded: replace the broken box with a note naming the path we looked
+		// for, so a missing/misnamed figure is visible (and diagnosable) instead of
+		// silently rendering as an empty width x height box.
+		const note = document.createElement('span');
+		note.textContent = localize('aria.peerReview.figureMissing', "[figure not found: {0}]", raw);
+		Object.assign(note.style, { color: 'var(--vscode-errorForeground)', fontSize: '11px', opacity: '0.8' });
+		img.replaceWith(note);
 	}
 
 	/** Rendered / Source segmented toggle for the manuscript body (in the header). */

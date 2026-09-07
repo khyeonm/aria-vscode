@@ -26,11 +26,10 @@ import { EditorPane } from '../../../browser/parts/editor/editorPane.js';
 import { IEditorOpenContext } from '../../../common/editor.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
 import { IEditorGroup } from '../../../services/editor/common/editorGroupsService.js';
-import { IEditorService } from '../../../services/editor/common/editorService.js';
 import { IPathService } from '../../../services/path/common/pathService.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { applyAriaScrollbar } from '../../aria/browser/ariaScrollbar.js';
-import { AriaManuscriptReviewInput } from './ariaManuscriptReviewInput.js';
+import { tokenize, diffTokens, tokensToText } from './ariaManuscriptReviewEditorPane.js';
 import { AriaPaperWriterInput } from './ariaPaperWriterInput.js';
 
 interface PaperFormat { paperType: string; targetWords: number; citationStyle: string; language: string; venue?: string }
@@ -103,9 +102,11 @@ export class AriaPaperWriterEditorPane extends EditorPane {
 	private focusEditing = false;
 	private lastSelfWriteAt = 0;
 	private proposalPending = false;
-	private reviewAutoOpened = false;
+	private proposed = '';
 	private importing = false;
-	// Rendered (markdown -> HTML) vs Source (raw text) view of the finished draft.
+	// Rendered (markdown -> HTML) vs Source (raw text / pending revision) view of the
+	// finished draft. A staged revision (manuscript.proposed.md) is reviewed inline in
+	// the Source view - accept/reject each change here, no separate tab.
 	private draftMode: 'rendered' | 'source' = 'rendered';
 	private lastRenderedDraft: IRenderedMarkdown | undefined;
 	private outlineDragIndex: number | undefined;
@@ -127,7 +128,6 @@ export class AriaPaperWriterEditorPane extends EditorPane {
 		@INotificationService private readonly notificationService: INotificationService,
 		@IPathService private readonly pathService: IPathService,
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
-		@IEditorService private readonly editorService: IEditorService,
 		@IDialogService private readonly dialogService: IDialogService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 	) {
@@ -197,16 +197,18 @@ export class AriaPaperWriterEditorPane extends EditorPane {
 		const a = await this.readJson<{ figures?: PaperAssetUI[]; sources?: PaperAssetUI[] }>(joinPath(folder, 'assets.json'));
 		this.assets = { figures: a?.figures ?? [], sources: a?.sources ?? [] };
 		const wasPending = this.proposalPending;
-		this.proposalPending = await this.fileService.exists(joinPath(folder, 'manuscript.proposed.md'));
-		if (!this.proposalPending) { this.reviewAutoOpened = false; } // ready for the next round
-		if (this.proposalPending && !wasPending) { this.reviewAutoOpened = false; } // a fresh proposal arrived
+		this.proposed = await this.readText(joinPath(folder, 'manuscript.proposed.md'));
+		this.proposalPending = this.proposed.trim().length > 0;
+		// A fresh proposal: switch the draft view to Source, where the revision is
+		// reviewed inline (accept/reject each change) - no separate tab opens.
+		if (this.proposalPending && !wasPending) { this.draftMode = 'source'; }
 	}
 
-	/** Open the manuscript-review tab once when Claude stages a revision. */
+	/** When a revision is staged, surface it inline: make sure the Write step (with
+	 *  the inline diff review) is the visible step. No separate review tab. */
 	private maybeOpenReview(): void {
-		if (!this.folder || !this.proposalPending || this.reviewAutoOpened) { return; }
-		this.reviewAutoOpened = true;
-		void this.editorService.openEditor(new AriaManuscriptReviewInput(this.folder), { pinned: true });
+		if (!this.folder || !this.proposalPending) { return; }
+		if (this.forcedStep !== STEPS.length - 1) { this.forcedStep = STEPS.length - 1; this.render(); }
 	}
 
 	private async loadLibrary(): Promise<LibraryEntry[]> {
@@ -884,11 +886,11 @@ export class AriaPaperWriterEditorPane extends EditorPane {
 			const banner = append(root, $('div'));
 			Object.assign(banner.style, { display: 'flex', alignItems: 'center', gap: '10px', justifyContent: 'space-between', border: '1px solid rgba(240,200,0,0.5)', background: 'rgba(240,200,0,0.12)', borderRadius: '6px', padding: '8px 12px', marginBottom: '12px' });
 			const t = append(banner, $('span'));
-			t.textContent = localize('aria.paperWriter.proposalPending', "The AI proposed edits to the manuscript - review and accept them.");
+			t.textContent = localize('aria.paperWriter.proposalPending', "The AI proposed edits. Review them in the Source view below and accept or reject each.");
 			t.style.fontSize = '13px';
-			banner.appendChild(this.button(localize('aria.paperWriter.openReview', "Review edits"), 'primary', () => {
-				if (this.folder) { void this.editorService.openEditor(new AriaManuscriptReviewInput(this.folder), { pinned: true }); }
-			}));
+			if (this.draftMode !== 'source') {
+				banner.appendChild(this.button(localize('aria.paperWriter.openReview', "Review edits"), 'primary', () => { this.draftMode = 'source'; this.render(); }));
+			}
 		}
 
 		const written = this.manuscript.trim().length > 0;
@@ -951,6 +953,10 @@ export class AriaPaperWriterEditorPane extends EditorPane {
 			Object.assign(draftBox.style, { border: '1px solid rgba(127,127,127,0.3)', borderRadius: '6px', padding: '12px 14px', maxHeight: '460px', overflowY: 'auto', wordBreak: 'break-word', fontSize: '13px', lineHeight: '1.6', marginBottom: '14px' });
 			if (this.draftMode === 'rendered') {
 				this.renderDraftRendered(draftBox);
+			} else if (this.proposalPending) {
+				// Source view with a staged revision: review it inline (accept/reject each
+				// change) instead of showing the raw text or opening a separate tab.
+				this.renderProposalReview(draftBox);
 			} else {
 				draftBox.style.whiteSpace = 'pre-wrap';
 				draftBox.textContent = this.manuscript.trim();
@@ -1046,6 +1052,135 @@ export class AriaPaperWriterEditorPane extends EditorPane {
 				return;
 			} catch { /* next candidate */ }
 		}
+		// Nothing loaded: name the path we looked for so a missing/misnamed figure is
+		// visible (and diagnosable) instead of a silent empty box.
+		const note = document.createElement('span');
+		note.textContent = localize('aria.paperWriter.figureMissing', "[figure not found: {0}]", raw);
+		Object.assign(note.style, { color: 'var(--vscode-errorForeground)', fontSize: '11px', opacity: '0.8' });
+		img.replaceWith(note);
+	}
+
+	// --- Inline revision review (manuscript.proposed.md) --------------------
+	// A staged revision is reviewed HERE, in the Source view, not in a separate tab:
+	// sentence-level diff of manuscript.md vs manuscript.proposed.md, each change with
+	// Accept (writes it into manuscript.md) / Reject (drops it from the proposal). The
+	// diff helpers are shared with the standalone manuscript-review pane.
+
+	private diffSegments(): ReturnType<typeof diffTokens> {
+		return diffTokens(tokenize(this.manuscript), tokenize(this.proposed));
+	}
+
+	/** Reassemble the manuscript, taking for each change either the proposed
+	 *  ('added') or the current ('removed') side. */
+	private assembleManuscript(choose: (changeIndex: number) => 'added' | 'removed'): string {
+		const toks: Parameters<typeof tokensToText>[0] = [];
+		for (const s of this.diffSegments()) {
+			if (s.type === 'equal') { toks.push(...s.tokens); }
+			else { toks.push(...(choose(s.index) === 'added' ? s.added : s.removed)); }
+		}
+		return tokensToText(toks) + '\n';
+	}
+
+	private async writeDraftFile(name: string, content: string): Promise<void> {
+		const folder = this.folder;
+		if (!folder) { return; }
+		this.lastSelfWriteAt = Date.now();
+		await this.fileService.writeFile(joinPath(folder, name), VSBuffer.fromString(content));
+		this.lastSelfWriteAt = Date.now();
+	}
+
+	private async clearProposal(): Promise<void> {
+		const folder = this.folder;
+		if (!folder) { return; }
+		this.lastSelfWriteAt = Date.now();
+		try { await this.fileService.del(joinPath(folder, 'manuscript.proposed.md')); } catch { /* already gone */ }
+		this.lastSelfWriteAt = Date.now();
+	}
+
+	private async reloadAndRender(): Promise<void> {
+		await this.reload();
+		this.render();
+	}
+
+	private async acceptChange(i: number): Promise<void> {
+		await this.writeDraftFile('manuscript.md', this.assembleManuscript(k => (k === i ? 'added' : 'removed')));
+		await this.reloadAndRender();
+	}
+	private async rejectChange(i: number): Promise<void> {
+		await this.writeDraftFile('manuscript.proposed.md', this.assembleManuscript(k => (k === i ? 'removed' : 'added')));
+		await this.reloadAndRender();
+	}
+	private async acceptAllChanges(): Promise<void> {
+		await this.writeDraftFile('manuscript.md', this.proposed.trimEnd() + '\n');
+		await this.clearProposal();
+		await this.reloadAndRender();
+	}
+	private async rejectAllChanges(): Promise<void> {
+		await this.clearProposal();
+		await this.reloadAndRender();
+	}
+
+	/** Render the staged revision inline: bulk actions + each change block with its
+	 *  own Accept / Reject (yellow = added, red = removed). */
+	private renderProposalReview(box: HTMLElement): void {
+		box.style.whiteSpace = 'normal';
+		const segments = this.diffSegments();
+		const changes = segments.filter((s): s is Extract<typeof s, { type: 'change' }> => s.type === 'change');
+		if (changes.length === 0) {
+			// Proposal matches the working copy - nothing to review; clean it up.
+			void this.clearProposal().then(() => this.reloadAndRender());
+			box.textContent = localize('aria.paperWriter.noChanges', "No changes to review.");
+			return;
+		}
+		const sub = append(box, $('div'));
+		sub.textContent = localize('aria.paperWriter.reviewSub', "{0} change(s). Yellow = added, red = removed. Accept or reject each - it applies immediately.", changes.length);
+		Object.assign(sub.style, { fontSize: '12px', opacity: '0.7', marginBottom: '10px' });
+
+		const bulk = append(box, $('div'));
+		Object.assign(bulk.style, { display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' });
+		bulk.appendChild(this.button(localize('aria.paperWriter.acceptAll', "Accept all"), 'ghost', () => void this.acceptAllChanges()));
+		bulk.appendChild(this.button(localize('aria.paperWriter.rejectAll', "Reject all"), 'ghost', () => void this.rejectAllChanges()));
+
+		const list = append(box, $('div'));
+		Object.assign(list.style, { fontSize: '13px', lineHeight: '1.6' });
+		for (const s of segments) {
+			if (s.type === 'equal') { this.renderReviewContext(list, tokensToText(s.tokens)); }
+			else { this.renderReviewChange(list, s); }
+		}
+	}
+
+	private renderReviewContext(parent: HTMLElement, text: string): void {
+		if (!text.trim()) { return; }
+		const el = append(parent, $('div'));
+		Object.assign(el.style, { whiteSpace: 'pre-wrap', wordBreak: 'break-word', opacity: '0.6', margin: '4px 0' });
+		el.textContent = text;
+	}
+
+	private renderReviewChange(parent: HTMLElement, seg: Extract<ReturnType<typeof diffTokens>[number], { type: 'change' }>): void {
+		const wrap = append(parent, $('div'));
+		Object.assign(wrap.style, { border: '1px solid rgba(127,127,127,0.3)', borderRadius: '6px', padding: '8px 10px', margin: '8px 0' });
+		const removed = tokensToText(seg.removed);
+		const added = tokensToText(seg.added);
+		if (removed.trim()) { this.renderReviewBlock(wrap, removed, 'removed'); }
+		if (added.trim()) { this.renderReviewBlock(wrap, added, 'added'); }
+		const actions = append(wrap, $('div'));
+		Object.assign(actions.style, { display: 'flex', gap: '6px', marginTop: '6px' });
+		actions.appendChild(this.button(localize('aria.paperWriter.accept', "Accept"), 'primary', () => void this.acceptChange(seg.index)));
+		actions.appendChild(this.button(localize('aria.paperWriter.reject', "Reject"), 'ghost', () => void this.rejectChange(seg.index)));
+	}
+
+	private renderReviewBlock(parent: HTMLElement, text: string, kind: 'added' | 'removed'): void {
+		const el = append(parent, $('div'));
+		const isHeading = /^#{1,6}\s/.test(text.trim());
+		Object.assign(el.style, { whiteSpace: 'pre-wrap', wordBreak: 'break-word', padding: '3px 6px', borderRadius: '3px', margin: '3px 0', fontWeight: isHeading ? '700' : '400' });
+		if (kind === 'added') {
+			el.style.background = 'rgba(240, 200, 0, 0.28)';
+		} else {
+			el.style.background = 'rgba(230, 70, 70, 0.22)';
+			el.style.textDecoration = 'line-through';
+			el.style.opacity = '0.8';
+		}
+		el.textContent = text;
 	}
 
 	private async export(format: 'markdown' | 'docx' | 'latex'): Promise<void> {
