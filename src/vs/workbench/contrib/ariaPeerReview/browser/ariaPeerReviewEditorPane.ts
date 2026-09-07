@@ -39,6 +39,17 @@ interface Proposal { original: string; replacement: string; explanation: string 
 interface Revision { documentKey?: string; proposals?: Proposal[]; recordedAt: string; original?: string; replacement?: string; explanation?: string }
 interface PaperItem { id: string; title: string }
 
+/** Image reference paths in document order (markdown `![](path)` and `<img src>`),
+ *  used to correlate each rendered <img> with its source so we can load it from
+ *  disk after render instead of inlining a huge data: URL the markdown parser
+ *  would choke on. */
+function imagePaths(md: string): string[] {
+	const re = /!\[[^\]]*\]\(\s*<?([^)>\s"']+)[^)]*\)|<img\b[^>]*?\bsrc\s*=\s*["']([^"']+)["']/gi;
+	const out: string[] = [];
+	for (let m = re.exec(md); m; m = re.exec(md)) { out.push(m[1] ?? m[2]); }
+	return out;
+}
+
 /** MIME type for a data: URL, keyed off a file extension. */
 function mimeForPath(p: string): string {
 	switch (p.split('.').pop()?.toLowerCase()) {
@@ -867,45 +878,40 @@ export class AriaPeerReviewEditorPane extends EditorPane {
 		Object.assign(body.style, { fontSize: '13px', lineHeight: '1.7', fontFamily: 'var(--vscode-font-family, system-ui, sans-serif)', padding: '16px 22px' });
 		const text = this.paperText;
 		if (!text) { body.textContent = localize('aria.peerReview.noBody', "(The paper body appears once a reviewer loads it.)"); return; }
-		// Images are inlined as data: URLs BEFORE rendering (async), so display never
-		// depends on how the markdown renderer/sanitizer treats a relative or file src
-		// (it can strip it, leaving an empty width x height box). Render once the text
-		// is ready; a "checking" note keeps the pane from flashing empty.
+		// Render first (headings/text visible), then load each figure onto its <img>
+		// AFTER render. We deliberately do NOT put the (huge) data: URL into the
+		// markdown - marked fails to parse an image whose URL is hundreds of KB and
+		// emits it as literal text. Setting img.src directly sidesteps that entirely.
 		body.textContent = localize('aria.peerReview.rendering', "Rendering...");
 		void this.renderInlined(body, text, this.paperAssetDir());
 	}
 
 	private async renderInlined(body: HTMLElement, text: string, dir: URI | undefined): Promise<void> {
-		const value = await this.inlineImages(this.prepareMarkdown(text), dir);
+		const md = this.prepareMarkdown(text);
 		this.lastRenderedMd?.dispose();
-		const rendered = renderMarkdown({ value, isTrusted: true, supportHtml: true }, { sanitizerConfig: { remoteImageIsAllowed: () => true } });
+		const rendered = renderMarkdown({ value: md, isTrusted: true, supportHtml: true }, { sanitizerConfig: { remoteImageIsAllowed: () => true } });
 		this.lastRenderedMd = rendered;
 		Object.assign(rendered.element.style, { wordBreak: 'break-word' });
-		for (const img of Array.from(rendered.element.querySelectorAll('img'))) { Object.assign(img.style, { maxWidth: '100%', height: 'auto' }); }
 		clearNode(body);
 		body.appendChild(rendered.element);
+		// Correlate each rendered <img> with its source path (same document order) and
+		// swap in a data: URL read from disk - or a "[figure not found]" marker.
+		const paths = imagePaths(md);
+		const imgs = Array.from(rendered.element.querySelectorAll('img'));
+		imgs.forEach((img, i) => { void this.applyFigure(img, paths[i], dir); });
 	}
 
-	/** Replace each local image reference (markdown ![alt](path) or <img src>) with a
-	 *  data: URL read from disk, so the rendered image always displays. A path that
-	 *  cannot be read anywhere becomes a visible "[figure not found: <path>]" marker,
-	 *  which surfaces the exact reference for diagnosis. Figures live in the draft's
-	 *  figures/ dir (uploaded) or the generated store .qoka/figures (BioRender / AI). */
-	private async inlineImages(text: string, dir: URI | undefined): Promise<string> {
-		const re = /(!\[[^\]]*\]\(\s*<?)([^)>\s"']+)((?:>?\s*(?:"[^"]*")?\s*)\))|(<img\b[^>]*?\bsrc\s*=\s*["'])([^"']+)(["'])/gi;
-		const paths = new Set<string>();
-		for (let m = re.exec(text); m; m = re.exec(text)) { const p = m[2] ?? m[5]; if (p) { paths.add(p); } }
-		if (paths.size === 0) { return text; }
-		const map = new Map<string, string | null>();
-		await Promise.all([...paths].map(async p => { map.set(p, await this.readImageData(p, dir)); }));
-		re.lastIndex = 0;
-		return text.replace(re, (whole, mdOpen, mdPath, mdClose, htmlOpen, htmlPath, htmlClose) => {
-			const p = mdPath ?? htmlPath;
-			if (p && /^(https?|data):/i.test(p)) { return whole; }
-			const data = p ? map.get(p) : null;
-			if (data) { return mdPath !== undefined ? `${mdOpen}${data}${mdClose}` : `${htmlOpen}${data}${htmlClose}`; }
-			return `\n\n\`[figure not found: ${p}]\`\n\n`;
-		});
+	/** Set one rendered <img> from disk (data: URL), or replace it with a visible
+	 *  "[figure not found: <path>]" marker naming the reference for diagnosis. */
+	private async applyFigure(img: HTMLImageElement, srcPath: string | undefined, dir: URI | undefined): Promise<void> {
+		const src = srcPath ?? img.getAttribute('src') ?? '';
+		if (/^(https?|data):/i.test(src)) { Object.assign(img.style, { maxWidth: '100%', height: 'auto' }); return; }
+		const data = src ? await this.readImageData(src, dir) : null;
+		if (data) { img.src = data; Object.assign(img.style, { maxWidth: '100%', height: 'auto' }); return; }
+		const note = document.createElement('span');
+		note.textContent = localize('aria.peerReview.figureMissing', "[figure not found: {0}]", src);
+		Object.assign(note.style, { color: 'var(--vscode-errorForeground)', fontSize: '11px', opacity: '0.8' });
+		img.replaceWith(note);
 	}
 
 	/** Read one image path into a data: URL, trying the draft dir, the draft's

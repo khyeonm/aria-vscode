@@ -59,6 +59,15 @@ const STYLES = [
 	{ v: 'bmj', l: 'BMJ' },
 	{ v: 'nejm', l: 'NEJM' },
 ];
+/** Image reference paths in document order, used to correlate each rendered <img>
+ *  with its source (loaded from disk after render, not inlined into the markdown). */
+function imagePaths(md: string): string[] {
+	const re = /!\[[^\]]*\]\(\s*<?([^)>\s"']+)[^)]*\)|<img\b[^>]*?\bsrc\s*=\s*["']([^"']+)["']/gi;
+	const out: string[] = [];
+	for (let m = re.exec(md); m; m = re.exec(md)) { out.push(m[1] ?? m[2]); }
+	return out;
+}
+
 /** MIME type for a data: URL, keyed off a file extension. */
 function mimeForPath(p: string): string {
 	switch (p.split('.').pop()?.toLowerCase()) {
@@ -1003,35 +1012,29 @@ export class AriaPaperWriterEditorPane extends EditorPane {
 	}
 
 	private async renderDraftInlined(box: HTMLElement, md: string, dir: URI | undefined): Promise<void> {
-		const value = await this.inlineImages(md, dir);
 		this.lastRenderedDraft?.dispose();
-		const rendered = renderMarkdown({ value, isTrusted: true, supportHtml: true }, { sanitizerConfig: { remoteImageIsAllowed: () => true } });
+		const rendered = renderMarkdown({ value: md, isTrusted: true, supportHtml: true }, { sanitizerConfig: { remoteImageIsAllowed: () => true } });
 		this.lastRenderedDraft = rendered;
 		Object.assign(rendered.element.style, { wordBreak: 'break-word' });
-		for (const img of Array.from(rendered.element.querySelectorAll('img'))) { Object.assign(img.style, { maxWidth: '100%', height: 'auto' }); }
 		clearNode(box);
 		box.appendChild(rendered.element);
+		// Load figures onto their <img> AFTER render (a huge data: URL inside the
+		// markdown makes marked emit it as literal text). Correlate by document order.
+		const paths = imagePaths(md);
+		Array.from(rendered.element.querySelectorAll('img')).forEach((img, i) => { void this.applyFigure(img, paths[i], dir); });
 	}
 
-	/** Replace each local image reference (markdown ![alt](path) or <img src>) with a
-	 *  data: URL read from disk. A path readable nowhere becomes a visible
-	 *  "[figure not found: <path>]" marker. Figures live in the draft's figures/ dir
-	 *  (uploaded) or the generated store .qoka/figures (BioRender / AI). */
-	private async inlineImages(text: string, dir: URI | undefined): Promise<string> {
-		const re = /(!\[[^\]]*\]\(\s*<?)([^)>\s"']+)((?:>?\s*(?:"[^"]*")?\s*)\))|(<img\b[^>]*?\bsrc\s*=\s*["'])([^"']+)(["'])/gi;
-		const paths = new Set<string>();
-		for (let m = re.exec(text); m; m = re.exec(text)) { const p = m[2] ?? m[5]; if (p) { paths.add(p); } }
-		if (paths.size === 0) { return text; }
-		const map = new Map<string, string | null>();
-		await Promise.all([...paths].map(async p => { map.set(p, await this.readImageData(p, dir)); }));
-		re.lastIndex = 0;
-		return text.replace(re, (whole, mdOpen, mdPath, mdClose, htmlOpen, htmlPath, htmlClose) => {
-			const p = mdPath ?? htmlPath;
-			if (p && /^(https?|data):/i.test(p)) { return whole; }
-			const data = p ? map.get(p) : null;
-			if (data) { return mdPath !== undefined ? `${mdOpen}${data}${mdClose}` : `${htmlOpen}${data}${htmlClose}`; }
-			return `\n\n\`[figure not found: ${p}]\`\n\n`;
-		});
+	/** Set one rendered <img> from disk (data: URL), or replace it with a visible
+	 *  "[figure not found: <path>]" marker. */
+	private async applyFigure(img: HTMLImageElement, srcPath: string | undefined, dir: URI | undefined): Promise<void> {
+		const src = srcPath ?? img.getAttribute('src') ?? '';
+		if (/^(https?|data):/i.test(src)) { Object.assign(img.style, { maxWidth: '100%', height: 'auto' }); return; }
+		const data = src ? await this.readImageData(src, dir) : null;
+		if (data) { img.src = data; Object.assign(img.style, { maxWidth: '100%', height: 'auto' }); return; }
+		const note = document.createElement('span');
+		note.textContent = localize('aria.paperWriter.figureMissing', "[figure not found: {0}]", src);
+		Object.assign(note.style, { color: 'var(--vscode-errorForeground)', fontSize: '11px', opacity: '0.8' });
+		img.replaceWith(note);
 	}
 
 	/** Read one image path into a data: URL, trying the draft dir, its figures/ dir,
