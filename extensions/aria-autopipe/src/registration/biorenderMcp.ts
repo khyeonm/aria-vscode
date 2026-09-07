@@ -3,7 +3,9 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { exec } from 'child_process';
+import { exec, spawn } from 'child_process';
+import * as http from 'http';
+import { URL } from 'url';
 import { promisify } from 'util';
 import * as vscode from 'vscode';
 import { candidateClaudePaths, candidateCodexPaths } from '../detection/claudeCodeDetector';
@@ -72,24 +74,114 @@ export async function ensureBioRenderRegistered(): Promise<void> {
 	}
 }
 
-/** Run the CLI's own OAuth for BioRender (opens the browser, stores the token in
- *  the CLI). This is what makes the chat actually authenticated - no `/mcp`
- *  needed. Claude is required; Codex is best-effort (its build may lack login). */
+/**
+ * Run the CLI's own OAuth for BioRender WITHOUT showing a terminal (Easy mode's
+ * goal is that users never touch a terminal). `claude mcp login` needs a TTY (a
+ * headless child fails with "stdin isn't a terminal"), so we allocate a hidden
+ * pseudo-terminal with `script` and drive the flow ourselves:
+ *
+ *  - Case A (loopback): the CLI opens the browser and catches the OAuth redirect
+ *    on its own localhost listener. The PTY just satisfies its TTY check; the
+ *    user only signs in.
+ *  - Case B (paste redirect URL): the CLI prints an authorize URL and waits for
+ *    the redirect URL to be pasted. We parse the redirect port from that URL,
+ *    stand up a loopback listener there, capture the browser callback, and type
+ *    the full URL back into the CLI's stdin - so the user still only signs in.
+ *
+ * We also open the authorize URL via `openExternal` (the sandboxed extension host
+ * may not open it itself). Resolves once the CLI exits and status confirms the
+ * connection, and shows a "start a new chat session" notice so the running
+ * session (which connected its MCPs at spawn) picks up the now-authenticated MCP.
+ */
 export async function loginBioRender(): Promise<{ ok: boolean; message: string }> {
 	await ensureBioRenderRegistered();
 	const claude = await resolveBinary('claude', candidateClaudePaths());
 	if (!claude) { return { ok: false, message: 'Claude CLI not found on PATH or known install locations.' }; }
-	const q = quoteArg(claude);
-	const { opts } = claudeScopeOpts();
-	try {
-		// Opens the browser and waits for the OAuth redirect; give it a long budget.
-		await execAsync(`${q} mcp login ${NAME}`, { ...opts, timeout: 300000 });
-	} catch (err) {
-		return { ok: false, message: `BioRender login failed: ${(err as { stderr?: string }).stderr ?? (err as Error).message}` };
+	const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+	const inner = `${quoteArg(claude)} mcp login ${NAME}`;
+
+	// `script` allocates the PTY. Its flags differ by platform: util-linux uses
+	// `-qfc "<cmd>" <file>`, BSD/macOS uses `-q <file> <cmd> <args...>`.
+	const isMac = process.platform === 'darwin';
+	const args = isMac
+		? ['-q', '/dev/null', claude, 'mcp', 'login', NAME]
+		: ['-qfc', inner, '/dev/null'];
+
+	const result = await new Promise<{ ok: boolean; message: string }>((resolve) => {
+		let settled = false;
+		let interceptor: http.Server | undefined;
+		let browserOpened = false;
+		let buf = '';
+
+		const child = spawn('script', args, { cwd, env: process.env });
+
+		const finish = (r: { ok: boolean; message: string }) => {
+			if (settled) { return; }
+			settled = true;
+			clearTimeout(timer);
+			try { interceptor?.close(); } catch { /* noop */ }
+			try { child.kill(); } catch { /* noop */ }
+			resolve(r);
+		};
+
+		const startInterceptor = (authUrl: string) => {
+			// Case B: learn the loopback port the CLI expects from redirect_uri.
+			let port = 0; let host = '127.0.0.1';
+			try {
+				const rd = new URL(authUrl).searchParams.get('redirect_uri');
+				if (rd) {
+					const r = new URL(rd);
+					if (/^(127\.0\.0\.1|localhost)$/.test(r.hostname)) { port = Number(r.port) || 0; host = r.hostname; }
+				}
+			} catch { /* not a loopback redirect */ }
+			if (!port) { return; }
+			const srv = http.createServer((req, res) => {
+				const full = `http://${host}:${port}${req.url ?? '/'}`;
+				res.writeHead(200, { 'Content-Type': 'text/html' });
+				res.end('<html><body style="font-family:sans-serif;padding:2rem">BioRender connected. You can close this tab and return to Qoka.</body></html>');
+				try { child.stdin?.write(full + '\n'); } catch { /* noop */ }
+			});
+			// If the CLI is already listening here (Case A), binding fails - that's fine.
+			srv.on('error', () => { /* Case A: the CLI owns this port */ });
+			srv.listen(port, '127.0.0.1', () => { interceptor = srv; });
+		};
+
+		const onOutput = (data: Buffer) => {
+			buf += data.toString('utf8');
+			if (browserOpened) { return; }
+			const m = buf.match(/https?:\/\/[^\s'"]+/);
+			if (m && /(authorize|oauth|auth|login|biorender)/i.test(m[0])) {
+				browserOpened = true;
+				const authUrl = m[0];
+				void vscode.env.openExternal(vscode.Uri.parse(authUrl));
+				startInterceptor(authUrl);
+			}
+		};
+
+		child.stdout?.on('data', onOutput);
+		child.stderr?.on('data', onOutput);
+		child.on('error', () => finish({ ok: false, message: 'Could not start the login helper (script/claude not found).' }));
+		child.on('exit', async () => {
+			const st = await bioRenderStatus();
+			finish(st.connected
+				? { ok: true, message: 'Connected to BioRender.' }
+				: { ok: false, message: 'BioRender login did not complete. Click Connect to try again.' });
+		});
+
+		const timer = setTimeout(async () => {
+			const st = await bioRenderStatus();
+			finish(st.connected
+				? { ok: true, message: 'Connected to BioRender.' }
+				: { ok: false, message: 'BioRender login timed out. Click Connect to try again.' });
+		}, 300000);
+	});
+
+	if (result.ok) {
+		void vscode.window.showInformationMessage(
+			'BioRender is connected. Start a new chat session so the assistant can use BioRender.',
+		);
 	}
-	const codex = await resolveBinary('codex', candidateCodexPaths());
-	if (codex) { try { await execAsync(`${quoteArg(codex)} mcp login ${NAME}`, { timeout: 300000 }); } catch { /* codex may not support mcp login */ } }
-	return { ok: true, message: 'Connected to BioRender.' };
+	return result;
 }
 
 /** Clear the CLI's stored BioRender OAuth credentials. */

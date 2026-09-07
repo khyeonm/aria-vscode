@@ -1057,9 +1057,11 @@ async function refreshAiRegistrations(): Promise<{ changed: boolean; registered:
 				}
 			}
 
-			// Keep the built-in BioRender MCP registered too (idempotent: skips when
-			// the CLI already has it, so this is cheap on repeat coordinator runs).
-			void ensureBioRenderRegistered();
+			// Register the built-in BioRender MCP as part of THIS awaited flow (not
+			// fire-and-forget), so it lands together with the other MCPs and the
+			// chat's "loading until MCPs are registered" gate waits for it too.
+			// Idempotent: skips when the CLI already has it, so it's cheap on repeats.
+			await ensureBioRenderRegistered();
 
 			return {
 				changed: newlyConnected.length > 0,
