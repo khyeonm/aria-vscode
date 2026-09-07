@@ -56,7 +56,24 @@ async function createDraftReview(fileService: IFileService, workspaceContextServ
 
 CommandsRegistry.registerCommand('aria.peerReview.new', async (accessor) => {
 	const editorService = accessor.get(IEditorService);
-	const execId = await createDraftReview(accessor.get(IFileService), accessor.get(IWorkspaceContextService), localize('aria.peerReview.newReviewTitle', "New review"), undefined);
+	const fileService = accessor.get(IFileService);
+	const workspaceContextService = accessor.get(IWorkspaceContextService);
+	// Reuse an existing UNSTARTED "New review" tab if one is open: focus it instead
+	// of spawning a second empty tab. Otherwise a repeat open_new_review (or +New)
+	// creates a fresh empty tab that becomes active and clobbers the source/files the
+	// user already picked - so start_peer_review then sees "no draft".
+	const folder = workspaceContextService.getWorkspace().folders[0];
+	for (const input of editorService.editors.filter((i): i is AriaPeerReviewInput => i instanceof AriaPeerReviewInput)) {
+		if (!input.execId || !folder) { continue; }
+		try {
+			const raw = await fileService.readFile(joinPath(folder.uri, '.qoka', 'manuscript', 'review', input.execId, 'meta.json'));
+			if ((JSON.parse(raw.value.toString()) as { draft?: boolean }).draft === true) {
+				await editorService.openEditor(input, { pinned: true });
+				return;
+			}
+		} catch { /* meta unreadable; keep looking */ }
+	}
+	const execId = await createDraftReview(fileService, workspaceContextService, localize('aria.peerReview.newReviewTitle', "New review"), undefined);
 	await editorService.openEditor(new AriaPeerReviewInput(execId), { pinned: true });
 });
 
@@ -111,7 +128,14 @@ CommandsRegistry.registerCommand('aria.peerReview.listOpen', async (accessor) =>
 // user picked). Triggered by the chat's start_peer_review tool - there is no button.
 // Returns the execId so the tool can tell the AI which run to drive.
 CommandsRegistry.registerCommand('aria.peerReview.runActive', async (accessor) => {
-	const pane = accessor.get(IEditorService).activeEditorPane;
+	const editorService = accessor.get(IEditorService);
+	// Prefer the active editor; fall back to any VISIBLE review pane, so a review
+	// started from the chat still finds the form even when the editor is not the
+	// focused pane (the chat panel took focus).
+	let pane: unknown = editorService.activeEditorPane;
+	if (!(pane instanceof AriaPeerReviewEditorPane)) {
+		pane = editorService.visibleEditorPanes.find(p => p instanceof AriaPeerReviewEditorPane);
+	}
 	if (pane instanceof AriaPeerReviewEditorPane) {
 		return pane.runFromForm();
 	}
