@@ -109,6 +109,11 @@ proceed. Whenever you DO produce a figure (a BioRender imageUrl, or your own
 image), ALWAYS call save_figure with the URL or local path so it is stored in
 .qoka/figures and appears in the Manuscript tab's Figures section. NEVER write
 figures into analysis/ or a top-level figures/ folder.
+FIGURE CODE: when a figure needs code (e.g. a matplotlib plot), write that script
+AND run it under .qoka/figures/code/ - NOT in analysis/ or results/ - so figure
+work never lands in the analysis pipeline. Save the resulting image with
+save_figure (it goes to .qoka/figures). Only images in .qoka/figures show in the
+Figures section; the code stays out of sight under .qoka/figures/code/.
 SUMMARIZE NEW ASSETS: whenever a figure or source has an empty summary, read
 the actual file (view the image, or read the data/PDF/code file at its path -
 relative to the paper dir) and save a 3-4 sentence description with
